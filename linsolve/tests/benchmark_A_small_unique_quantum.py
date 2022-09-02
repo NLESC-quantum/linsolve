@@ -7,11 +7,11 @@ import time, random
 
 np.random.seed(0)
 
-NPRMS = 8
+NPRMS = 10
 NEQS = 25
-SIZE = 1
-# MODE = 'solve'   # dense:1.56 s
-MODE = 'quantum'
+SIZE = 100
+MODE = 'solve' # dense:1.56 s
+# MODE = 'quantum' 
 # MODE = 'lsqr'  # dense:5.4 s
 #MODE = 'pinv'  # dense:3.4 s
 
