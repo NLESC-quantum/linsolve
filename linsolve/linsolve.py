@@ -36,6 +36,7 @@ import warnings
 from copy import deepcopy
 from functools import reduce
 
+
 # Monkey patch for backward compatibility:
 # ast.Num deprecated in Python 3.8. Make it an alias for ast.Constant
 # if it gets removed.
@@ -472,8 +473,39 @@ class LinearSolver:
         At = A.transpose([2,1,0]).conj()
         AtA = [np.dot(At[k], A[...,k]) for k in range(y.shape[-1])]
         Aty = [np.dot(At[k], y[...,k]) for k in range(y.shape[-1])]
+        print(AtA[0])
+        print(AtA[0].shape)
         return np.linalg.solve(AtA, Aty).T # sometimes errors if singular
         #return scipy.linalg.solve(AtA, Aty, 'her') # slower by about 50%
+
+    def _invert_solve_quantum_statevector(self, A, y, rcond):
+        '''Use VQLS to solve the system of equation. Requires a fully constrained 
+        system of equation with an hermitian AtA matrix. 
+        rcond' is unused, but passed as an argument to match the interface of other
+        _invert methods.'''
+
+        from qiskit_research.vqls import VQLS
+        from qiskit.circuit.library.n_local.real_amplitudes import RealAmplitudes
+        from qiskit.algorithms.optimizers import COBYLA
+        from qiskit import Aer
+        from qiskit.quantum_info import Statevector 
+
+        At = A.transpose([2,1,0]).conj()
+        AtA = [np.dot(At[k], A[...,k]) for k in range(y.shape[-1])]
+        Aty = [np.dot(At[k], y[...,k]) for k in range(y.shape[-1])]
+
+        num_qubits = int(np.ceil(np.log2(AtA[0].shape[0])))
+        ansatz = RealAmplitudes(num_qubits, entanglement='full', reps=3, insert_barriers=False)
+        backend = Aer.get_backend('aer_simulator_statevector')
+        vqls = VQLS(ansatz=ansatz,
+                    optimizer=COBYLA(maxiter=200, disp=True),
+                    quantum_instance=backend
+                )
+        output = []
+        for m, y in zip(AtA, Aty):
+            sol = vqls.solve(m, y)
+            output.append(np.real(Statevector(sol.state).data))
+        return np.array(output)
 
     def _invert_solve_sparse(self, xs_ys_vals, y, rcond):
         '''Use linalg.solve to solve a fully constrained (non-degenerate) system of equations.
@@ -520,7 +552,7 @@ class LinearSolver:
         Returns:
             sol: a dictionary of solutions with variables as keys
         """
-        assert(mode in ['default','lsqr','pinv','solve'])
+        assert(mode in ['default','lsqr','pinv','solve', 'quantum'])
         if rcond is None:
             rcond = np.finfo(self.dtype).resolution
         y = self.get_weighted_data()
@@ -545,6 +577,7 @@ class LinearSolver:
                 elif mode == 'lsqr': _invert = self._invert_lsqr
                 elif mode == 'pinv': _invert = self._invert_pinv
                 elif mode == 'solve': _invert = self._invert_solve
+                elif mode == 'quantum': _invert = self._invert_solve_quantum_statevector
                 x = _invert(A, y, rcond)
 
         x.shape = x.shape[:1] + self._data_shape # restore to shape of original data
