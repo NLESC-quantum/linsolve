@@ -298,7 +298,7 @@ class LinearSolver:
         self.dtype = infer_dtype(list(self.data.values()) + list(self.consts.values()) + list(self.wgts.values()))
         if self.re_im_split: self.dtype = np.real(np.ones(1, dtype=self.dtype)).dtype
         self.shape = self._shape()
-
+        
     def _shape(self):
         '''Get broadcast shape of constants, weights for last dim of A'''
         sh = []
@@ -406,6 +406,7 @@ class LinearSolver:
         At = A.T.conj()
         AtA = np.dot(At, A)
         AtAi = np.linalg.pinv(AtA, rcond=rcond, hermitian=True)
+
         # x = np.einsum('ij,jk,kn->in', AtAi, At, y, optimize=True) # slow for small matrices
         x = np.dot(AtAi, np.dot(At, y))
         return x
@@ -424,6 +425,7 @@ class LinearSolver:
         '''Use np.linalg.pinv to invert AtA matrix.  Tends to be about ~3x slower than solve.'''
         # As of numpy 1.14, pinv works on stacks of matrices
         At = A.transpose([2,1,0]).conj()
+        
         AtA = [np.dot(At[k], A[...,k]) for k in range(y.shape[-1])]
         # AtA = np.einsum('jin,jkn->nik', A.conj(), A, optimize=True) # slower
         AtAi = np.linalg.pinv(AtA, rcond=rcond, hermitian=True)
@@ -473,8 +475,7 @@ class LinearSolver:
         At = A.transpose([2,1,0]).conj()
         AtA = [np.dot(At[k], A[...,k]) for k in range(y.shape[-1])]
         Aty = [np.dot(At[k], y[...,k]) for k in range(y.shape[-1])]
-        print(AtA[0])
-        print(AtA[0].shape)
+
         return np.linalg.solve(AtA, Aty).T # sometimes errors if singular
         #return scipy.linalg.solve(AtA, Aty, 'her') # slower by about 50%
 
@@ -490,9 +491,15 @@ class LinearSolver:
         from qiskit import Aer
         from qiskit.quantum_info import Statevector 
 
+
         At = A.transpose([2,1,0]).conj()
-        AtA = [np.dot(At[k], A[...,k]) for k in range(y.shape[-1])]
-        Aty = [np.dot(At[k], y[...,k]) for k in range(y.shape[-1])]
+
+        if At.shape[0] == 1:
+            AtA = [np.dot(At[0], A[...,0])] * (y.shape[-1])
+            Aty = [np.dot(At[0], y[...,k]) for k in range(y.shape[-1])]
+        else:
+            AtA = [np.dot(At[k], A[...,k]) for k in range(y.shape[-1])]
+            Aty = [np.dot(At[k], y[...,k]) for k in range(y.shape[-1])]
 
         num_qubits = int(np.ceil(np.log2(AtA[0].shape[0])))
         ansatz = RealAmplitudes(num_qubits, entanglement='full', reps=3, insert_barriers=False)
@@ -552,13 +559,16 @@ class LinearSolver:
         Returns:
             sol: a dictionary of solutions with variables as keys
         """
+
         assert(mode in ['default','lsqr','pinv','solve', 'quantum'])
         if rcond is None:
             rcond = np.finfo(self.dtype).resolution
         y = self.get_weighted_data()
         if self.sparse:
             xs, ys, vals = self.get_A_sparse()
-            if vals.shape[0] == 1 and y.shape[-1] > 1: # reuse inverse
+            if mode == 'quantum':
+                raise ValueError('Quantum solver not implemented yet for sparse matrices')
+            elif vals.shape[0] == 1 and y.shape[-1] > 1: # reuse inverse
                 x = self._invert_pinv_shared_sparse((xs,ys,vals), y, rcond)
             else: # we can't reuse inverses
                 if mode == 'default': _invert = self._invert_default_sparse
@@ -570,6 +580,8 @@ class LinearSolver:
             A = self.get_A()
             Ashape = self._A_shape()
             assert(A.ndim == 3)
+            if mode == 'quantum':
+                x = self._invert_solve_quantum_statevector(A, y, rcond)
             if Ashape[-1] == 1 and y.shape[-1] > 1: # can reuse inverse
                 x = self._invert_pinv_shared(A[...,0], y, rcond)
             else: # we can't reuse inverses
