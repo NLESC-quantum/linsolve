@@ -20,7 +20,7 @@ setup_args = {
     'packages' : ['linsolve'],
     'version': version.version,
     'include_package_data': True,
-    'install_requires': ['numpy>=1.14', 'scipy'],
+    'install_requires': ['numpy>=1.23', 'scipy'],
     'classifiers': ['Development Status :: 5 - Production/Stable',
                     'Intended Audience :: Science/Research',
                     'License :: OSI Approved :: BSD License',
