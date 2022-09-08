@@ -36,6 +36,13 @@ import warnings
 from copy import deepcopy
 from functools import reduce
 
+from qiskit.circuit.library.n_local.real_amplitudes import RealAmplitudes
+from qiskit.algorithms.optimizers import COBYLA
+from qiskit import Aer
+from qiskit.quantum_info import Statevector 
+
+from qiskit_research.vqls import VQLS
+
 
 # Monkey patch for backward compatibility:
 # ast.Num deprecated in Python 3.8. Make it an alias for ast.Constant
@@ -277,6 +284,8 @@ class LinearSolver:
         self.sparse = sparse
         self.wgts = verify_weights(wgts, self.keys)
         constants = kwargs.pop('constants', kwargs)
+        self.ibmq_backend = kwargs.pop('ibmq_backend', kwargs)
+
         self.eqs = [LinearEquation(k,wgts=self.wgts[k], constants=constants) for k in self.keys]
         # XXX add ability to have more than one measurment for a key=equation
         # see https://github.com/HERA-Team/linsolve/issues/14
@@ -298,7 +307,36 @@ class LinearSolver:
         self.dtype = infer_dtype(list(self.data.values()) + list(self.consts.values()) + list(self.wgts.values()))
         if self.re_im_split: self.dtype = np.real(np.ones(1, dtype=self.dtype)).dtype
         self.shape = self._shape()
-        
+
+        self.quantum_backend = None
+        self.quantum_ansatz = None
+        self.quantum_optimizer = None
+        self.quantum_solvers = ['vqls']
+
+    def set_quantum_backend(self, backend):
+        """set the qauntum backend
+
+        Args:
+            backend (_type_): _description_
+        """
+        self.quantum_backend = backend
+
+    def set_quantum_ansatz(self, ansatz):
+        """_summary_
+
+        Args:
+            ansatz (_type_): _description_
+        """
+        self.quantum_ansatz = ansatz
+
+    def set_quantum_optimizer(self, opt):
+        """_summary_
+
+        Args:
+            opt (_type_): _description_
+        """
+        self.quantum_optimizer = opt
+
     def _shape(self):
         '''Get broadcast shape of constants, weights for last dim of A'''
         sh = []
@@ -479,18 +517,11 @@ class LinearSolver:
         return np.linalg.solve(AtA, Aty).T # sometimes errors if singular
         #return scipy.linalg.solve(AtA, Aty, 'her') # slower by about 50%
 
-    def _invert_solve_quantum_statevector(self, A, y, rcond):
+    def _invert_vqls(self, A, y, rcond):
         '''Use VQLS to solve the system of equation. Requires a fully constrained 
         system of equation with an hermitian AtA matrix. 
         rcond' is unused, but passed as an argument to match the interface of other
         _invert methods.'''
-
-        from qiskit_research.vqls import VQLS
-        from qiskit.circuit.library.n_local.real_amplitudes import RealAmplitudes
-        from qiskit.algorithms.optimizers import COBYLA
-        from qiskit import Aer
-        from qiskit.quantum_info import Statevector 
-
 
         At = A.transpose([2,1,0]).conj()
 
@@ -501,12 +532,10 @@ class LinearSolver:
             AtA = [np.dot(At[k], A[...,k]) for k in range(y.shape[-1])]
             Aty = [np.dot(At[k], y[...,k]) for k in range(y.shape[-1])]
 
-        num_qubits = int(np.ceil(np.log2(AtA[0].shape[0])))
-        ansatz = RealAmplitudes(num_qubits, entanglement='full', reps=3, insert_barriers=False)
-        backend = Aer.get_backend('aer_simulator_statevector')
-        vqls = VQLS(ansatz=ansatz,
-                    optimizer=COBYLA(maxiter=200, disp=True),
-                    quantum_instance=backend
+        
+        vqls = VQLS(ansatz=self.quantum_ansatz,
+                    optimizer=self.quantum_optimizer,
+                    quantum_instance=self.quantum_backend
                 )
         output = []
         for m, y in zip(AtA, Aty):
@@ -560,7 +589,7 @@ class LinearSolver:
             sol: a dictionary of solutions with variables as keys
         """
 
-        assert(mode in ['default','lsqr','pinv','solve', 'quantum'])
+        assert(mode in ['default','lsqr','pinv','solve', 'vqls'])
         if rcond is None:
             rcond = np.finfo(self.dtype).resolution
         y = self.get_weighted_data()
@@ -580,16 +609,28 @@ class LinearSolver:
             A = self.get_A()
             Ashape = self._A_shape()
             assert(A.ndim == 3)
-            if mode == 'quantum':
-                x = self._invert_solve_quantum_statevector(A, y, rcond)
+
+            if mode == 'vqls':
+
+                if self.quantum_backend is None:
+                    self.set_quantum_backend = Aer.get_backend('aer_simulator_staetvector')
+                if self.quantum_ansatz is None:
+                    num_qubits = int(np.ceil(np.log2(A[0].shape[0])))
+                    self.set_quantum_ansatz(RealAmplitudes(num_qubits, entanglement='full', 
+                                                           reps=3, insert_barriers=False))
+                if self.quantum_optimizer is None:
+                    self.set_quantum_optimizer(COBYLA(maxiter=200, disp=True))
+
+                x = self._invert_vqls(A, y, rcond)
+
             if Ashape[-1] == 1 and y.shape[-1] > 1: # can reuse inverse
                 x = self._invert_pinv_shared(A[...,0], y, rcond)
+
             else: # we can't reuse inverses
                 if mode == 'default': _invert = self._invert_default
                 elif mode == 'lsqr': _invert = self._invert_lsqr
                 elif mode == 'pinv': _invert = self._invert_pinv
                 elif mode == 'solve': _invert = self._invert_solve
-                elif mode == 'quantum': _invert = self._invert_solve_quantum_statevector
                 x = _invert(A, y, rcond)
 
         x.shape = x.shape[:1] + self._data_shape # restore to shape of original data
