@@ -36,13 +36,6 @@ import warnings
 from copy import deepcopy
 from functools import reduce
 
-from qiskit.circuit.library.n_local.real_amplitudes import RealAmplitudes
-from qiskit.algorithms.optimizers import COBYLA
-from qiskit import Aer
-from qiskit.quantum_info import Statevector 
-
-from qiskit_research.vqls import VQLS
-
 
 # Monkey patch for backward compatibility:
 # ast.Num deprecated in Python 3.8. Make it an alias for ast.Constant
@@ -284,7 +277,6 @@ class LinearSolver:
         self.sparse = sparse
         self.wgts = verify_weights(wgts, self.keys)
         constants = kwargs.pop('constants', kwargs)
-        self.ibmq_backend = kwargs.pop('ibmq_backend', kwargs)
 
         self.eqs = [LinearEquation(k,wgts=self.wgts[k], constants=constants) for k in self.keys]
         # XXX add ability to have more than one measurment for a key=equation
@@ -308,35 +300,30 @@ class LinearSolver:
         if self.re_im_split: self.dtype = np.real(np.ones(1, dtype=self.dtype)).dtype
         self.shape = self._shape()
 
+        # defiene the quantum solvers
+        self.quantum_solvers = ['vqls', 'vqls_runtime']
         self.quantum_backend = None
         self.quantum_ansatz = None
         self.quantum_optimizer = None
-        self.quantum_solvers = ['vqls']
+        self.ibmq_credential = None
+        self.ibmq_runtime_program_options = None
 
     def set_quantum_backend(self, backend):
-        """set the qauntum backend
-
-        Args:
-            backend (_type_): _description_
-        """
-        self.quantum_backend = backend
-
+        self.quantum_backend = backend 
+    
     def set_quantum_ansatz(self, ansatz):
-        """_summary_
-
-        Args:
-            ansatz (_type_): _description_
-        """
-        self.quantum_ansatz = ansatz
-
+        self.quantum_ansatz = ansatz 
+    
     def set_quantum_optimizer(self, opt):
-        """_summary_
-
-        Args:
-            opt (_type_): _description_
-        """
         self.quantum_optimizer = opt
 
+    def set_ibmq_credential(self, cred):
+        self.ibmq_credential = cred
+
+    def set_ibmq_runtime_program_options(self, options):
+        self.ibmq_runtime_program_options = options
+
+        
     def _shape(self):
         '''Get broadcast shape of constants, weights for last dim of A'''
         sh = []
@@ -517,11 +504,75 @@ class LinearSolver:
         return np.linalg.solve(AtA, Aty).T # sometimes errors if singular
         #return scipy.linalg.solve(AtA, Aty, 'her') # slower by about 50%
 
+    @staticmethod
+    def _decompose_matrix(A):
+        vals = np.unique(A)
+        matrices = []
+        for v in vals:
+            if v != 0:
+                m = np.zeros_like(A)
+                m[A==v] = v
+                matrices.append(m)
+        return matrices
+
     def _invert_vqls(self, A, y, rcond):
         '''Use VQLS to solve the system of equation. Requires a fully constrained 
         system of equation with an hermitian AtA matrix. 
         rcond' is unused, but passed as an argument to match the interface of other
         _invert methods.'''
+
+        from qalcore.qiskit.vqls import VQLS
+        from qiskit.circuit.library.n_local.real_amplitudes import RealAmplitudes
+        from qiskit.algorithms.optimizers import COBYLA
+        from qiskit import Aer
+        from qiskit.quantum_info import Statevector 
+
+
+        At = A.transpose([2,1,0]).conj()
+        print(At)
+        print(At.shape)
+        if At.shape[0] == 1:
+            AtA = [np.dot(At[0], A[...,0])] * (y.shape[-1])
+            Aty = [np.dot(At[0], y[...,k]) for k in range(y.shape[-1])]
+        else:
+            AtA = [np.dot(At[k], A[...,k]) for k in range(y.shape[-1])]
+            Aty = [np.dot(At[k], y[...,k]) for k in range(y.shape[-1])]
+
+
+        vqls = VQLS(ansatz=self.quantum_ansatz,
+                    optimizer=self.quantum_optimizer,
+                    quantum_instance=self.quantum_backend
+                )
+        output = []
+        for m, y in zip(AtA, Aty):
+            
+            mats = self._decompose_matrix(m)
+            for i in mats:
+                print('')
+                if np.any(np.diag(i)):
+                    print(np.diag(np.diag(i)))
+            print(len(mats))
+            exit()
+            sol = vqls.solve(m, y)
+            output.append(np.real(Statevector(sol.state).data))
+        return np.array(output)
+
+
+    def _invert_vqls_runtime(self, A, y, rcond):
+        '''Use VQLS to solve the system of equation. Requires a fully constrained 
+        system of equation with an hermitian AtA matrix. 
+        rcond' is unused, but passed as an argument to match the interface of other
+        _invert methods.'''
+
+        from qiskit_ibm_runtime import QiskitRuntimeService
+        from qalcore.qiskit.vqls.runtime import vqls_runner
+        from qalcore.qiskit.vqls.runtime.upload_runtime_program import get_metadata
+
+        from qiskit.circuit.library.n_local.real_amplitudes import RealAmplitudes
+        from qiskit.algorithms.optimizers import COBYLA
+        from qiskit import Aer
+        from qiskit.quantum_info import Statevector 
+
 
         At = A.transpose([2,1,0]).conj()
 
@@ -532,16 +583,35 @@ class LinearSolver:
             AtA = [np.dot(At[k], A[...,k]) for k in range(y.shape[-1])]
             Aty = [np.dot(At[k], y[...,k]) for k in range(y.shape[-1])]
 
-        
-        vqls = VQLS(ansatz=self.quantum_ansatz,
-                    optimizer=self.quantum_optimizer,
-                    quantum_instance=self.quantum_backend
-                )
+        # start the runtime service
+        QiskitRuntimeService.save_account(
+            channel="ibm_quantum",
+            token=self.ibmq_credential["ibmq_token"],
+            instance=self.ibmq_credential["hub" + "/" + 
+                     self.ibmq_credential["group"] + "/" + 
+                     self.ibmq_credential["project"],
+            overwrite=True,
+        )
+        service = QiskitRuntimeService()
+
         output = []
         for m, y in zip(AtA, Aty):
-            sol = vqls.solve(m, y)
-            output.append(np.real(Statevector(sol.state).data))
+            job = vqls_runner(self.quantum_backend, 
+                              m, y, 
+                              self.ibmq_runtime_program_options["program_id"], 
+                              self.quantum_ansatz, 
+                              shots=ibmq_runtime_program_options["shots"])
+            res = job.result()
+
+            # extract the optimal parameters and assign them to the ansatz
+            opt_parameters = dict(zip(self.quantum_ansatz.parameters, res.x))
+            solution = self.quantum_ansatz.assign_parameters(opt_parameters)
+
+            # compute the vqls solution
+            output.append(np.real(Statevector(solution).data))
+
         return np.array(output)
+
 
     def _invert_solve_sparse(self, xs_ys_vals, y, rcond):
         '''Use linalg.solve to solve a fully constrained (non-degenerate) system of equations.
@@ -589,13 +659,13 @@ class LinearSolver:
             sol: a dictionary of solutions with variables as keys
         """
 
-        assert(mode in ['default','lsqr','pinv','solve', 'vqls'])
+        assert(mode in ['default','lsqr','pinv','solve']+self.quantum_solvers)
         if rcond is None:
             rcond = np.finfo(self.dtype).resolution
         y = self.get_weighted_data()
         if self.sparse:
             xs, ys, vals = self.get_A_sparse()
-            if mode == 'quantum':
+            if mode in self.quantum_solvers:
                 raise ValueError('Quantum solver not implemented yet for sparse matrices')
             elif vals.shape[0] == 1 and y.shape[-1] > 1: # reuse inverse
                 x = self._invert_pinv_shared_sparse((xs,ys,vals), y, rcond)
@@ -610,28 +680,20 @@ class LinearSolver:
             Ashape = self._A_shape()
             assert(A.ndim == 3)
 
-            if mode == 'vqls':
-
-                if self.quantum_backend is None:
-                    self.set_quantum_backend = Aer.get_backend('aer_simulator_staetvector')
-                if self.quantum_ansatz is None:
-                    num_qubits = int(np.ceil(np.log2(A[0].shape[0])))
-                    self.set_quantum_ansatz(RealAmplitudes(num_qubits, entanglement='full', 
-                                                           reps=3, insert_barriers=False))
-                if self.quantum_optimizer is None:
-                    self.set_quantum_optimizer(COBYLA(maxiter=200, disp=True))
-
-                x = self._invert_vqls(A, y, rcond)
-
-            if Ashape[-1] == 1 and y.shape[-1] > 1: # can reuse inverse
-                x = self._invert_pinv_shared(A[...,0], y, rcond)
-
-            else: # we can't reuse inverses
-                if mode == 'default': _invert = self._invert_default
-                elif mode == 'lsqr': _invert = self._invert_lsqr
-                elif mode == 'pinv': _invert = self._invert_pinv
-                elif mode == 'solve': _invert = self._invert_solve
+            if mode in self.quantum_solvers:
+                if mode == 'vqls': _invert = self._invert_vqls
+                elif mode == 'vqls_runtime': _invert = self._invert_vqls_runtime
                 x = _invert(A, y, rcond)
+
+            else:
+                if Ashape[-1] == 1 and y.shape[-1] > 1: # can reuse inverse
+                    x = self._invert_pinv_shared(A[...,0], y, rcond)
+                else: # we can't reuse inverses
+                    if mode == 'default': _invert = self._invert_default
+                    elif mode == 'lsqr': _invert = self._invert_lsqr
+                    elif mode == 'pinv': _invert = self._invert_pinv
+                    elif mode == 'solve': _invert = self._invert_solve
+                    x = _invert(A, y, rcond)
 
         x.shape = x.shape[:1] + self._data_shape # restore to shape of original data
         sol = {}
