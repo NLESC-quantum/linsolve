@@ -32,7 +32,6 @@ import ast
 from scipy.sparse import csc_matrix
 import scipy.sparse.linalg
 import scipy.linalg
-import warnings
 from copy import deepcopy
 from functools import reduce
 
