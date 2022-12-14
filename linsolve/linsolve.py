@@ -307,6 +307,7 @@ class LinearSolver:
         self.quantum_optimizer = None
         self.ibmq_credential = None
         self.ibmq_runtime_program_options = None
+        self.quantum_circuits = None
 
     def set_quantum_backend(self, backend):
         self.quantum_backend = backend 
@@ -323,6 +324,8 @@ class LinearSolver:
     def set_ibmq_runtime_program_options(self, options):
         self.ibmq_runtime_program_options = options
 
+    def set_quantum_circuits(self, circ):
+        self.quantum_circuits = circ
         
     def _shape(self):
         '''Get broadcast shape of constants, weights for last dim of A'''
@@ -348,7 +351,7 @@ class LinearSolver:
             return (2*len(self.eqs),2*len(self.prm_order))+sh
         else: return (len(self.eqs),len(self.prm_order))+sh
 
-    def get_A(self):
+    def get_A(self, columns=None):
         '''Return A matrix for A*x=y.'''
         A = np.zeros(self._A_shape(), dtype=self.dtype)
         xs,ys,vals = self.sparse_form()
@@ -356,7 +359,14 @@ class LinearSolver:
         #A[xs,ys] += [v * ones for v in vals] # This is broken when a single equation has the same param more than once
         for x,y,v in zip(xs,ys,[v * ones for v in vals]):
             A[x,y] += v # XXX ugly
-        return A
+        if columns is None:
+            return A
+        elif isinstance(columns, int):
+            return A[:columns, ...]
+        elif isinstance(columns, list):
+            return A[columns,...]
+        else:
+            raise ValueError("columns not recognized")
 
     def sparse_form(self):
         '''Returns a lists of lists of row and col numbers and coefficients in order to
@@ -376,7 +386,7 @@ class LinearSolver:
                 vals[n] = ones*val
         return np.array(xs), np.array(ys), np.array(vals, dtype=self.dtype).T
     
-    def get_weighted_data(self):
+    def get_weighted_data(self, columns=None):
         '''Return y = data * wgt**.5 as a 2D vector, regardless of original data/wgt shape.'''
         dtype = self.dtype # default
         if self.re_im_split:
@@ -398,8 +408,23 @@ class LinearSolver:
         if self.re_im_split:
             rv = np.empty((2*d.shape[0],)+d.shape[1:], dtype=self.dtype)
             rv[::2],rv[1::2] = d.real, d.imag
-            return rv
-        else: return d
+            if columns is None:
+                return rv
+            elif isinstance(columns, int):
+                return rv[:columns, ...]
+            elif isinstance(columns, list):
+                return rv[columns, ...]
+            else:
+                raise ValueError('columns not recognized')
+        else: 
+            if columns is None:
+                return d
+            elif isinstance(columns, int):
+                return d[:columns, ...]
+            elif isinstance(columns, list):
+                return d[columns, ...]
+            else:
+                raise ValueError('columns not recognized')
     
     def _invert_lsqr(self, A, y, rcond):
         '''Use np.linalg.lstsq to solve a system of equations.  Usually the best 
@@ -428,6 +453,8 @@ class LinearSolver:
 
     def _invert_pinv_shared(self, A, y, rcond):
         '''Helper function for forming (At A)^-1 At.  Uses pinv to invert.'''
+
+
         At = A.T.conj()
         AtA = np.dot(At, A)
         AtAi = np.linalg.pinv(AtA, rcond=rcond, hermitian=True)
@@ -452,6 +479,8 @@ class LinearSolver:
         At = A.transpose([2,1,0]).conj()
         
         AtA = [np.dot(At[k], A[...,k]) for k in range(y.shape[-1])]
+        print(len(AtA))
+        print(AtA[0].shape)
         # AtA = np.einsum('jin,jkn->nik', A.conj(), A, optimize=True) # slower
         AtAi = np.linalg.pinv(AtA, rcond=rcond, hermitian=True)
         x = np.einsum('nij,njk,kn->in', AtAi, At, y, optimize=True)
@@ -506,6 +535,7 @@ class LinearSolver:
 
     @staticmethod
     def _decompose_matrix(A):
+        print(A)
         vals = np.unique(A)
         matrices = []
         for v in vals:
@@ -513,7 +543,33 @@ class LinearSolver:
                 m = np.zeros_like(A)
                 m[A==v] = v
                 matrices.append(m)
+                print(m)
+                print('')
+        print(len(matrices))
         return matrices
+
+    @staticmethod
+    def post_process_vqls_solution(A, y, x):
+        """Retreive the  norm and direction of the solution vector
+           VQLS provides a normalized form of the solution vector
+           that can also have a -1 prefactor. This routine retrieves
+           the un-normalized solution vector with the correct prefactor
+
+        Args:
+            A (np.ndarray): matrix of the linear system
+            y (np.ndarray): rhs of the linear system
+            x (np.ndarray): proposed solution
+        """
+        
+        Ax = A @ x
+        normy = np.linalg.norm(y)
+        normAx = np.linalg.norm(Ax)
+        prefac = normy/normAx 
+        
+        if np.dot(Ax*prefac, y) < 0:
+            prefac *= -1
+
+        return prefac * x
 
     def _invert_vqls(self, A, y, rcond):
         '''Use VQLS to solve the system of equation. Requires a fully constrained 
@@ -527,10 +583,11 @@ class LinearSolver:
         from qiskit import Aer
         from qiskit.quantum_info import Statevector 
 
+        import matplotlib.pyplot as plt 
+        import numpy.linalg as npla
 
         At = A.transpose([2,1,0]).conj()
-        print(At)
-        print(At.shape)
+
         if At.shape[0] == 1:
             AtA = [np.dot(At[0], A[...,0])] * (y.shape[-1])
             Aty = [np.dot(At[0], y[...,k]) for k in range(y.shape[-1])]
@@ -544,18 +601,25 @@ class LinearSolver:
                     quantum_instance=self.quantum_backend
                 )
         output = []
+
+        
         for m, y in zip(AtA, Aty):
-            
+
+            mi = npla.pinv(m, rcond=rcond, hermitian=True)
+            ref = np.dot(mi, y) 
+
             mats = self._decompose_matrix(m)
-            for i in mats:
-                print('')
-                if np.any(np.diag(i)):
-                    print(np.diag(np.diag(i)))
-            print(len(mats))
-            exit()
-            sol = vqls.solve(m, y)
-            output.append(np.real(Statevector(sol.state).data))
-        return np.array(output)
+            if self.quantum_circuits is None:
+                sol = vqls.solve(m, y)
+            else:
+                mop = self.quantum_circuits.get_matrix_from_circuits()
+                assert(np.allclose(mop,m))
+                sol = vqls.solve(self.quantum_circuits, y)
+
+            solution_vector = self.post_process_vqls_solution(m, y, np.real(Statevector(sol.state).data))
+            output.append(solution_vector)
+            
+        return np.array(output).T
 
 
     def _invert_vqls_runtime(self, A, y, rcond):
@@ -587,30 +651,39 @@ class LinearSolver:
         QiskitRuntimeService.save_account(
             channel="ibm_quantum",
             token=self.ibmq_credential["ibmq_token"],
-            instance=self.ibmq_credential["hub" + "/" + 
+            instance=self.ibmq_credential["hub"] + "/" + 
                      self.ibmq_credential["group"] + "/" + 
                      self.ibmq_credential["project"],
-            overwrite=True,
+            overwrite=True
         )
         service = QiskitRuntimeService()
-
+        self.quantum_backend = service.backend(self.quantum_backend)
         output = []
         for m, y in zip(AtA, Aty):
+            if self.quantum_circuits is not None:
+                mop = self.quantum_circuits.get_matrix_from_circuits()
+                assert(np.allclose(mop,m))
+                matrix = [ [w,c] for w,c in zip(self.quantum_circuits.coefficients, 
+                                                self.quantum_circuits.circuits)  ]
+            else:
+                matrix = m
+
             job = vqls_runner(self.quantum_backend, 
-                              m, y, 
-                              self.ibmq_runtime_program_options["program_id"], 
-                              self.quantum_ansatz, 
-                              shots=ibmq_runtime_program_options["shots"])
+                            matrix, y, 
+                            self.ibmq_runtime_program_options["program_id"], 
+                            self.quantum_ansatz, 
+                            shots=self.ibmq_runtime_program_options["shots"])
             res = job.result()
 
             # extract the optimal parameters and assign them to the ansatz
             opt_parameters = dict(zip(self.quantum_ansatz.parameters, res.x))
             solution = self.quantum_ansatz.assign_parameters(opt_parameters)
+            solution_vector = self.post_process_vqls_solution(m, y, np.real(Statevector(solution).data))
 
             # compute the vqls solution
-            output.append(np.real(Statevector(solution).data))
+            output.append(solution_vector)
 
-        return np.array(output)
+        return np.array(output).T
 
 
     def _invert_solve_sparse(self, xs_ys_vals, y, rcond):
@@ -636,7 +709,7 @@ class LinearSolver:
         '''The default sparse inverter, currently 'pinv'.'''
         return self._invert_pinv_sparse(xs_ys_vals, y, rcond)
 
-    def solve(self, rcond=None, mode='default'):
+    def solve(self, rcond=None, mode='default', matrix_columns=None):
         """Compute x' = (At A)^-1 At * y, returning x' as dict of prms:values.
 
         Args:
@@ -658,12 +731,15 @@ class LinearSolver:
         Returns:
             sol: a dictionary of solutions with variables as keys
         """
-
+        
         assert(mode in ['default','lsqr','pinv','solve']+self.quantum_solvers)
         if rcond is None:
             rcond = np.finfo(self.dtype).resolution
-        y = self.get_weighted_data()
+        y = self.get_weighted_data(columns=matrix_columns)
+
         if self.sparse:
+            if matrix_columns is not None:
+                raise ValueError("matrix column selection not implemented for sparse matrices")
             xs, ys, vals = self.get_A_sparse()
             if mode in self.quantum_solvers:
                 raise ValueError('Quantum solver not implemented yet for sparse matrices')
@@ -676,11 +752,15 @@ class LinearSolver:
                 elif mode == 'solve': _invert = self._invert_solve_sparse
                 x = _invert((xs,ys,vals), y, rcond)
         else: 
-            A = self.get_A()
+           
+            A = self.get_A(columns=matrix_columns)
             Ashape = self._A_shape()
             assert(A.ndim == 3)
 
             if mode in self.quantum_solvers:
+                print(A.shape)
+                print(y.shape)
+                
                 if mode == 'vqls': _invert = self._invert_vqls
                 elif mode == 'vqls_runtime': _invert = self._invert_vqls_runtime
                 x = _invert(A, y, rcond)
@@ -688,6 +768,7 @@ class LinearSolver:
             else:
                 if Ashape[-1] == 1 and y.shape[-1] > 1: # can reuse inverse
                     x = self._invert_pinv_shared(A[...,0], y, rcond)
+
                 else: # we can't reuse inverses
                     if mode == 'default': _invert = self._invert_default
                     elif mode == 'lsqr': _invert = self._invert_lsqr
@@ -795,7 +876,7 @@ class LogProductSolver:
         else:
             self.ls_phs = None # no phase term to solve for
 
-    def solve(self, rcond=None, mode='default'):
+    def solve(self, rcond=None, mode='default', baseline_pairs=None):
         """Solve both amplitude and phase by taking the log of both sides to linearize.
 
         Args:
@@ -817,9 +898,9 @@ class LogProductSolver:
         Returns:
             sol: a dictionary of complex solutions with variables as keys
         """
-        sol_amp = self.ls_amp.solve(rcond=rcond, mode=mode)
+        sol_amp = self.ls_amp.solve(rcond=rcond, mode=mode, matrix_columns=baseline_pairs)
         if self.ls_phs is not None:
-            sol_phs = self.ls_phs.solve(rcond=rcond, mode=mode)
+            sol_phs = self.ls_phs.solve(rcond=rcond, mode=mode,  matrix_columns=baseline_pairs)
             sol = {k: np.exp(sol_amp[k] + 
                       np.complex64(1j) * sol_phs[k]).astype(self.dtype)
                       for k in sol_amp.keys()}
