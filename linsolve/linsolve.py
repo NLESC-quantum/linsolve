@@ -301,7 +301,7 @@ class LinearSolver:
         self.shape = self._shape()
 
         # defiene the quantum solvers
-        self.quantum_solvers = ['vqls', 'vqls_runtime']
+        self.quantum_solvers = ['vqls', 'vqls_runtime', 'qubols']
         self.quantum_backend = None
         self.quantum_ansatz = None
         self.quantum_optimizer = None
@@ -533,6 +533,50 @@ class LinearSolver:
         return np.linalg.solve(AtA, Aty).T # sometimes errors if singular
         #return scipy.linalg.solve(AtA, Aty, 'her') # slower by about 50%
 
+    def _invert_qubols(self, A, y, rcond):
+        """_summary_
+
+        Args:
+            A (_type_): _description_
+            y (_type_): _description_
+            rcond (_type_): _description_
+
+        Raises:
+            ValueError: _description_
+            ValueError: _description_
+
+        Returns:
+            _type_: _description_
+        """
+
+        from qalcore.dwave.qubols.qubols import QUBOLS 
+
+        At = A.transpose([2,1,0]).conj()
+
+        if At.shape[0] == 1:
+            AtA = [np.dot(At[0], A[...,0])] * (y.shape[-1])
+            Aty = [np.dot(At[0], y[...,k]) for k in range(y.shape[-1])]
+        else:
+            AtA = [np.dot(At[k], A[...,k]) for k in range(y.shape[-1])]
+            Aty = [np.dot(At[k], y[...,k]) for k in range(y.shape[-1])]
+
+
+        output = []
+
+        for m, y in zip(AtA, Aty):
+
+            normMat = np.linalg.norm(m)
+            normVec = np.linalg.norm(y)
+
+            m /= normMat 
+            y /= normVec 
+
+            qubols = QUBOLS(m,y)
+            solution_vector = qubols.solve(num_reads=1000)
+            output.append(solution_vector/normMat*normVec)
+            
+        return np.array(output).T
+
     @staticmethod
     def _decompose_matrix(A):
         print(A)
@@ -547,6 +591,7 @@ class LinearSolver:
                 print('')
         print(len(matrices))
         return matrices
+
 
     @staticmethod
     def post_process_vqls_solution(A, y, x):
@@ -578,13 +623,7 @@ class LinearSolver:
         _invert methods.'''
 
         from qalcore.qiskit.vqls import VQLS
-        from qiskit.circuit.library.n_local.real_amplitudes import RealAmplitudes
-        from qiskit.algorithms.optimizers import COBYLA
-        from qiskit import Aer
         from qiskit.quantum_info import Statevector 
-
-        import matplotlib.pyplot as plt 
-        import numpy.linalg as npla
 
         At = A.transpose([2,1,0]).conj()
 
@@ -602,11 +641,7 @@ class LinearSolver:
                 )
         output = []
 
-        
         for m, y in zip(AtA, Aty):
-
-            mi = npla.pinv(m, rcond=rcond, hermitian=True)
-            ref = np.dot(mi, y) 
 
             mats = self._decompose_matrix(m)
             if self.quantum_circuits is None:
@@ -763,6 +798,7 @@ class LinearSolver:
                 
                 if mode == 'vqls': _invert = self._invert_vqls
                 elif mode == 'vqls_runtime': _invert = self._invert_vqls_runtime
+                elif mode == 'qubols': _invert = self._invert_qubols 
                 x = _invert(A, y, rcond)
 
             else:
