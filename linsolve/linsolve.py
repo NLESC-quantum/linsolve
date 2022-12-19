@@ -311,7 +311,7 @@ class LinearSolver:
 
         self.qubo_solvers = ['qubols']
         self.qubo_num_qbits = None
-        slf.qubo_num_reads = None
+        self.qubo_num_reads = None
 
         self.quantum_solvers = self.vqa_solvers + self.qubo_solvers 
 
@@ -554,7 +554,7 @@ class LinearSolver:
             vec (_type_): _description_
         """
         mat_norm = np.linalg.norm(mat)
-        vec_norm = np.linagl.norm(vec)
+        vec_norm = np.linalg.norm(vec)
 
         return (mat/mat_norm, vec/vec_norm), (mat_norm, vec_norm)
 
