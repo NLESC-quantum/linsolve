@@ -300,23 +300,29 @@ class LinearSolver:
         if self.re_im_split: self.dtype = np.real(np.ones(1, dtype=self.dtype)).dtype
         self.shape = self._shape()
 
-        # defiene the quantum solvers
-        self.quantum_solvers = ['vqls', 'vqls_runtime', 'qubols']
-        self.quantum_backend = None
-        self.quantum_ansatz = None
-        self.quantum_optimizer = None
+        # define the quantum solvers
+        self.vqa_solvers = ['vqls', 'vqls_runtime']
+        self.ibmq_backend = None
+        self.vqa_ansatz = None
+        self.vqa_optimizer = None
         self.ibmq_credential = None
         self.ibmq_runtime_program_options = None
-        self.quantum_circuits = None
+        self.vqa_circuits = None
 
-    def set_quantum_backend(self, backend):
-        self.quantum_backend = backend 
+        self.qubo_solvers = ['qubols']
+        self.qubo_num_qbits = None
+        slf.qubo_num_reads = None
+
+        self.quantum_solvers = self.vqa_solvers + self.qubo_solvers 
+
+    def set_ibmq_backend(self, backend):
+        self.ibmq_backend = backend 
     
-    def set_quantum_ansatz(self, ansatz):
-        self.quantum_ansatz = ansatz 
+    def set_vqa_ansatz(self, ansatz):
+        self.vqa_ansatz = ansatz 
     
-    def set_quantum_optimizer(self, opt):
-        self.quantum_optimizer = opt
+    def set_vqa_optimizer(self, opt):
+        self.vqa_optimizer = opt
 
     def set_ibmq_credential(self, cred):
         self.ibmq_credential = cred
@@ -324,9 +330,15 @@ class LinearSolver:
     def set_ibmq_runtime_program_options(self, options):
         self.ibmq_runtime_program_options = options
 
-    def set_quantum_circuits(self, circ):
-        self.quantum_circuits = circ
+    def set_vqa_circuits(self, circ):
+        self.vqa_circuits = circ
+
+    def set_qubo_num_qbits(self, nqbit):
+        self.qubo_num_qbits = nqbit
         
+    def set_qubo_num_reads(self, nreads):
+        self.qubo_num_reads = nreads
+
     def _shape(self):
         '''Get broadcast shape of constants, weights for last dim of A'''
         sh = []
@@ -458,7 +470,6 @@ class LinearSolver:
         At = A.T.conj()
         AtA = np.dot(At, A)
         AtAi = np.linalg.pinv(AtA, rcond=rcond, hermitian=True)
-
         # x = np.einsum('ij,jk,kn->in', AtAi, At, y, optimize=True) # slow for small matrices
         x = np.dot(AtAi, np.dot(At, y))
         return x
@@ -469,6 +480,7 @@ class LinearSolver:
         A = csc_matrix((vals[0], (xs, ys)))
         At = A.T.conj()
         AtA = At.dot(A).toarray() # make dense after sparse dot product
+        
         AtAi = np.linalg.pinv(AtA, rcond=rcond, hermitian=True)
         x = np.dot(AtAi, At.dot(y))
         return x
@@ -529,9 +541,33 @@ class LinearSolver:
         At = A.transpose([2,1,0]).conj()
         AtA = [np.dot(At[k], A[...,k]) for k in range(y.shape[-1])]
         Aty = [np.dot(At[k], y[...,k]) for k in range(y.shape[-1])]
-
+        
         return np.linalg.solve(AtA, Aty).T # sometimes errors if singular
         #return scipy.linalg.solve(AtA, Aty, 'her') # slower by about 50%
+
+    @staticmethod
+    def _normalization(mat, vec):
+        """normalize the matrix and vector of the linear systems
+
+        Args:
+            mat (_type_): _description_
+            vec (_type_): _description_
+        """
+        mat_norm = np.linalg.norm(mat)
+        vec_norm = np.linagl.norm(vec)
+
+        return (mat/mat_norm, vec/vec_norm), (mat_norm, vec_norm)
+
+    @staticmethod
+    def _unnormalization(sol, mat_norm, vec_norm):
+        """un normalized the solution vector
+
+        Args:
+            sol (_type_): _description_
+            mat_norm (_type_): _description_
+            vec_norm (_type_): _description_
+        """
+        return sol/mat_norm*vec_norm
 
     def _invert_qubols(self, A, y, rcond):
         """_summary_
@@ -565,15 +601,13 @@ class LinearSolver:
 
         for m, y in zip(AtA, Aty):
 
-            normMat = np.linalg.norm(m)
-            normVec = np.linalg.norm(y)
+            (m_, y_), (m_norm, y_norm) = self._normalization(m, y)
 
-            m /= normMat 
-            y /= normVec 
-
-            qubols = QUBOLS(m,y)
-            solution_vector = qubols.solve(num_reads=1000)
-            output.append(solution_vector/normMat*normVec)
+            qubols = QUBOLS(m_,y_)
+            solution_vector = qubols.solve(nqbit = self.qubo_num_qbits,
+                                           num_reads=self.qubo_num_reads)
+            solution_vector = self._unnormalization(solution_vector, m_norm, y_norm)
+            output.append(solution_vector)
             
         return np.array(output).T
 
@@ -623,7 +657,8 @@ class LinearSolver:
         _invert methods.'''
 
         from qalcore.qiskit.vqls import VQLS
-        from qiskit.quantum_info import Statevector 
+        from qiskit.quantum_info import Statevector
+        import numpy as np 
 
         At = A.transpose([2,1,0]).conj()
 
@@ -635,23 +670,25 @@ class LinearSolver:
             Aty = [np.dot(At[k], y[...,k]) for k in range(y.shape[-1])]
 
 
-        vqls = VQLS(ansatz=self.quantum_ansatz,
-                    optimizer=self.quantum_optimizer,
-                    quantum_instance=self.quantum_backend
+        vqls = VQLS(ansatz=self.vqa_ansatz,
+                    optimizer=self.vqa_optimizer,
+                    quantum_instance=self.ibmq_backend
                 )
         output = []
 
+    
         for m, y in zip(AtA, Aty):
-
+            
             mats = self._decompose_matrix(m)
-            if self.quantum_circuits is None:
+            if self.vqa_circuits is None:
                 sol = vqls.solve(m, y)
             else:
-                mop = self.quantum_circuits.get_matrix_from_circuits()
+                mop = self.vqa_circuits.get_matrix_from_circuits()
                 assert(np.allclose(mop,m))
-                sol = vqls.solve(self.quantum_circuits, y)
+                sol = vqls.solve(self.vqa_circuits, y)
 
-            solution_vector = self.post_process_vqls_solution(m, y, np.real(Statevector(sol.state).data))
+            solution_vector = np.real(Statevector(sol.state).data)
+            solution_vector = self.post_process_vqls_solution(m, y, solution_vector)
             output.append(solution_vector)
             
         return np.array(output).T
@@ -692,27 +729,27 @@ class LinearSolver:
             overwrite=True
         )
         service = QiskitRuntimeService()
-        self.quantum_backend = service.backend(self.quantum_backend)
+        self.ibmq_backend = service.backend(self.ibmq_backend)
         output = []
         for m, y in zip(AtA, Aty):
-            if self.quantum_circuits is not None:
-                mop = self.quantum_circuits.get_matrix_from_circuits()
+            if self.vqa_circuits is not None:
+                mop = self.vqa.get_matrix_from_circuits()
                 assert(np.allclose(mop,m))
-                matrix = [ [w,c] for w,c in zip(self.quantum_circuits.coefficients, 
-                                                self.quantum_circuits.circuits)  ]
+                matrix = [ [w,c] for w,c in zip(self.vqa_circuits.coefficients, 
+                                                self.vqa_circuits.circuits)  ]
             else:
                 matrix = m
 
-            job = vqls_runner(self.quantum_backend, 
+            job = vqls_runner(self.ibmq_backend, 
                             matrix, y, 
                             self.ibmq_runtime_program_options["program_id"], 
-                            self.quantum_ansatz, 
+                            self.vqa_ansatz, 
                             shots=self.ibmq_runtime_program_options["shots"])
             res = job.result()
 
             # extract the optimal parameters and assign them to the ansatz
-            opt_parameters = dict(zip(self.quantum_ansatz.parameters, res.x))
-            solution = self.quantum_ansatz.assign_parameters(opt_parameters)
+            opt_parameters = dict(zip(self.vqa_ansatz.parameters, res.x))
+            solution = self.vqa_ansatz.assign_parameters(opt_parameters)
             solution_vector = self.post_process_vqls_solution(m, y, np.real(Statevector(solution).data))
 
             # compute the vqls solution
@@ -767,7 +804,7 @@ class LinearSolver:
             sol: a dictionary of solutions with variables as keys
         """
         
-        assert(mode in ['default','lsqr','pinv','solve']+self.quantum_solvers)
+        assert(mode in ['default','lsqr','pinv','solve'] + self.quantum_solvers)
         if rcond is None:
             rcond = np.finfo(self.dtype).resolution
         y = self.get_weighted_data(columns=matrix_columns)
