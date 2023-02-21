@@ -614,6 +614,9 @@ class LinearSolver:
     @staticmethod
     def _decompose_matrix(A):
         print(A)
+        print(np.diag(A))
+        print(A.shape)
+        np.savetxt('16linear.mat', A)
         vals = np.unique(A)
         matrices = []
         for v in vals:
@@ -669,6 +672,7 @@ class LinearSolver:
             AtA = [np.dot(At[k], A[...,k]) for k in range(y.shape[-1])]
             Aty = [np.dot(At[k], y[...,k]) for k in range(y.shape[-1])]
 
+        np.savetxt('16linear_baseline.mat', At[0])
 
         vqls = VQLS(ansatz=self.vqa_ansatz,
                     optimizer=self.vqa_optimizer,
@@ -680,6 +684,7 @@ class LinearSolver:
         for m, y in zip(AtA, Aty):
             
             mats = self._decompose_matrix(m)
+            exit()
             if self.vqa_circuits is None:
                 sol = vqls.solve(m, y)
             else:
