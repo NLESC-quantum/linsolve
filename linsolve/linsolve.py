@@ -368,13 +368,10 @@ class LinearSolver:
             # (At N^-1 A)^1 At N^1 y ==> (At A)^1 At d (where d is the result of this 
             # function and A is redefined to include half of the weights)
         self._data_shape = d.shape[1:] # store for reshaping sols to original
-        
-        # It's possible to have a zero-size d (if there are no keys)
-        if d.size > 0:
-            d.shape = (d.shape[0],-1) # Flatten 
-        else:
-            d.shape = (0, 0)
 
+        # It's possible to have a zero-size d (if there are no keys)
+        d.shape = (d.shape[0], -1) if d.size > 0 else (0, 0)
+        
         if self.re_im_split:
             rv = np.empty((2*d.shape[0],)+d.shape[1:], dtype=self.dtype)
             rv[::2],rv[1::2] = d.real, d.imag
