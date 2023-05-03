@@ -301,28 +301,32 @@ class LinearSolver:
         self.shape = self._shape()
 
         # define the quantum solvers
-        self.vqa_solvers = ['vqls', 'vqls_runtime']
+        self.vqls_solvers = ['vqls', 'vqls_runtime']
         self.ibmq_backend = None
-        self.vqa_ansatz = None
-        self.vqa_optimizer = None
+        self.vqls_ansatz = None
+        self.vqls_optimizer = None
+        self.vqls_options = None
         self.ibmq_credential = None
         self.ibmq_runtime_program_options = None
-        self.vqa_circuits = None
+        self.vqls_circuits = None
 
         self.qubo_solvers = ['qubols']
         self.qubo_num_qbits = None
         self.qubo_num_reads = None
 
-        self.quantum_solvers = self.vqa_solvers + self.qubo_solvers 
+        self.quantum_solvers = self.vqls_solvers + self.qubo_solvers 
 
     def set_ibmq_backend(self, backend):
         self.ibmq_backend = backend 
     
-    def set_vqa_ansatz(self, ansatz):
-        self.vqa_ansatz = ansatz 
+    def set_vqls_ansatz(self, ansatz):
+        self.vqls_ansatz = ansatz 
     
-    def set_vqa_optimizer(self, opt):
-        self.vqa_optimizer = opt
+    def set_vqls_optimizer(self, opt):
+        self.vqls_optimizer = opt
+
+    def set_vqls_options(self, opt):
+        self.vqls_options = opt
 
     def set_ibmq_credential(self, cred):
         self.ibmq_credential = cred
@@ -330,8 +334,8 @@ class LinearSolver:
     def set_ibmq_runtime_program_options(self, options):
         self.ibmq_runtime_program_options = options
 
-    def set_vqa_circuits(self, circ):
-        self.vqa_circuits = circ
+    def set_vqls_circuits(self, circ):
+        self.vqls_circuits = circ
 
     def set_qubo_num_qbits(self, nqbit):
         self.qubo_num_qbits = nqbit
@@ -659,8 +663,9 @@ class LinearSolver:
         rcond' is unused, but passed as an argument to match the interface of other
         _invert methods.'''
 
-        from qalcore.qiskit.vqls import VQLS
+        from qalcore.qiskit.vqls import VQLS, VQLSLog
         from qiskit.quantum_info import Statevector
+        from qiskit.primitives import Estimator, Sampler
         import numpy as np 
 
         At = A.transpose([2,1,0]).conj()
@@ -672,26 +677,24 @@ class LinearSolver:
             AtA = [np.dot(At[k], A[...,k]) for k in range(y.shape[-1])]
             Aty = [np.dot(At[k], y[...,k]) for k in range(y.shape[-1])]
 
-        np.savetxt('16linear_baseline.mat', At[0])
+        estimator = Estimator()
+        log = VQLSLog([],[]) 
+        try:
+            if self.vqls_options["use_overlap_test"]:
+                sampler = Sampler()
+        except:
+            sampler = None
 
-        vqls = VQLS(ansatz=self.vqa_ansatz,
-                    optimizer=self.vqa_optimizer,
-                    quantum_instance=self.ibmq_backend
+        vqls = VQLS(estimator,
+                    self.vqls_ansatz,
+                    optimizer=self.vqls_optimizer,
+                    callback=log.update, 
+                    sampler=sampler
                 )
         output = []
 
-    
         for m, y in zip(AtA, Aty):
-            
-            mats = self._decompose_matrix(m)
-            exit()
-            if self.vqa_circuits is None:
-                sol = vqls.solve(m, y)
-            else:
-                mop = self.vqa_circuits.get_matrix_from_circuits()
-                assert(np.allclose(mop,m))
-                sol = vqls.solve(self.vqa_circuits, y)
-
+            sol = vqls.solve(m, y, self.vqls_options)
             solution_vector = np.real(Statevector(sol.state).data)
             solution_vector = self.post_process_vqls_solution(m, y, solution_vector)
             output.append(solution_vector)
@@ -705,13 +708,9 @@ class LinearSolver:
         rcond' is unused, but passed as an argument to match the interface of other
         _invert methods.'''
 
-        from qiskit_ibm_runtime import QiskitRuntimeService
-        from qalcore.qiskit.vqls.runtime import vqls_runner
-        from qalcore.qiskit.vqls.runtime.upload_runtime_program import get_metadata
-
-        from qiskit.circuit.library.n_local.real_amplitudes import RealAmplitudes
-        from qiskit.algorithms.optimizers import COBYLA
-        from qiskit import Aer
+        
+        from qalcore.qiskit.vqls import VQLS, VQLSLog
+        from qiskit_ibm_runtime import QiskitRuntimeService, Estimator, Sampler, Session, Options
         from qiskit.quantum_info import Statevector 
 
 
@@ -725,40 +724,53 @@ class LinearSolver:
             Aty = [np.dot(At[k], y[...,k]) for k in range(y.shape[-1])]
 
         # start the runtime service
-        QiskitRuntimeService.save_account(
-            channel="ibm_quantum",
-            token=self.ibmq_credential["ibmq_token"],
-            instance=self.ibmq_credential["hub"] + "/" + 
-                     self.ibmq_credential["group"] + "/" + 
-                     self.ibmq_credential["project"],
-            overwrite=True
-        )
+        if self.ibmq_credential is not None:
+            QiskitRuntimeService.save_account(
+                channel="ibm_quantum",
+                token=self.ibmq_credential["ibmq_token"],
+                instance=self.ibmq_credential["hub"] + "/" + 
+                        self.ibmq_credential["group"] + "/" + 
+                        self.ibmq_credential["project"],
+                overwrite=True
+            )
+
+        # start the runtime service
         service = QiskitRuntimeService()
-        self.ibmq_backend = service.backend(self.ibmq_backend)
-        output = []
-        for m, y in zip(AtA, Aty):
-            if self.vqa_circuits is not None:
-                mop = self.vqa.get_matrix_from_circuits()
-                assert(np.allclose(mop,m))
-                matrix = [ [w,c] for w,c in zip(self.vqa_circuits.coefficients, 
-                                                self.vqa_circuits.circuits)  ]
-            else:
-                matrix = m
 
-            job = vqls_runner(self.ibmq_backend, 
-                            matrix, y, 
-                            self.ibmq_runtime_program_options["program_id"], 
-                            self.vqa_ansatz, 
-                            shots=self.ibmq_runtime_program_options["shots"])
-            res = job.result()
+        # start session
+        with Session(service=service, backend=self.ibmq_backend) as session:
 
-            # extract the optimal parameters and assign them to the ansatz
-            opt_parameters = dict(zip(self.vqa_ansatz.parameters, res.x))
-            solution = self.vqa_ansatz.assign_parameters(opt_parameters)
-            solution_vector = self.post_process_vqls_solution(m, y, np.real(Statevector(solution).data))
+            # options of the primitives
+            options = Options()
+            # options.optimization_level = 3
 
-            # compute the vqls solution
-            output.append(solution_vector)
+            # estimator 
+            estimator = Estimator(session=session, options=options)
+
+            # sampler if needed
+            try:
+                if self.vqls_options["use_overlap_test"]:
+                    sampler = Sampler(session=session, options=options)
+            except:
+                sampler = None
+
+            # log
+            log = VQLSLog([],[]) 
+
+            # declare the solver
+            vqls = VQLS(
+                estimator,
+                self.vqls_ansatz,
+                optimizer=self.vqls_optimizer,
+                callback=log.update, 
+                sampler=sampler
+            )
+
+            output = []
+            for m, y in zip(AtA, Aty):
+                solution = vqls.solve(m, y, self.vqls_options)
+                solution_vector = self.post_process_vqls_solution(m, y, np.real(Statevector(solution.state).data))
+                output.append(solution_vector)
 
         return np.array(output).T
 
