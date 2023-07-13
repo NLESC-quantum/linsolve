@@ -1,9 +1,9 @@
 [run]
-omit = 
+omit =
     */tests/*
     */version.py
 
 [report]
-omit = 
+omit =
     */tests/*
     */version.py
