@@ -14,4 +14,4 @@ except ModuleNotFoundError:  # pragma: no cover
         # package is not installed
         __version__ = 'unknown'
 
-    from .linsolve import *
+from .linsolve import *
