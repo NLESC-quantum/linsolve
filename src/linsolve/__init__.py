@@ -13,4 +13,4 @@ except ModuleNotFoundError:  # pragma: no cover
         # package is not installed
         __version__ = "unknown"
 
-from .linsolve import LinearSolver, LinProductSolver, LogProductSolver
+from .linsolve import *  # noqa
