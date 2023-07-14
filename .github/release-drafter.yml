@@ -1,0 +1,62 @@
+# See https://github.com/marketplace/actions/release-drafter for configuration
+categories:
+  - title: ":boom: Breaking Changes"
+    label: "API breaking"
+  - title: ":rocket: Features"
+    labels:
+      - "type: feature: ui"
+      - "type: feature: physical"
+  - title: ":fire: Removals and Deprecations"
+    label: "type: maint: removal"
+  - title: ":beetle: Fixes"
+    label: "type: bug"
+  - title: ":racehorse: Performance"
+    labels:
+      - "type: performance: memory"
+      - "type: performance: cpu"
+  - title: ":rotating_light: Testing"
+    label: "type: testing"
+  - title: ":construction_worker: Continuous Integration"
+    label: "type: ci"
+  - title: ":books: Documentation"
+    label: "type: maint: documentation"
+  - title: ":hammer: Refactoring"
+    label: "type: maint: refactoring"
+  - title: ":lipstick: Style"
+    label: "type: maint: style"
+  - title: ":package: Dependencies"
+    labels:
+      - "type: maint: dependencies"
+      - "type: maint: build"
+name-template: 'v$RESOLVED_VERSION'
+tag-template: 'v$RESOLVED_VERSION'
+autolabeler:
+  - label: 'type: maint: documentation'
+    files:
+      - '*.md'
+    branch:
+      - '/.*docs{0,1}.*/'
+  - label: 'type: bug'
+    branch:
+      - '/fix.*/'
+    title:
+      - '/fix/i'
+  - label: "type: maint: removal"
+    title:
+      - "/remove .*/i"
+  - label: "type: ci"
+    files:
+      - '.github/*'
+      - '.pre-commit-config.yaml'
+      - '.coveragrc'
+  - label: "type: maint: style"
+    files:
+      - ".flake8"
+  - label: "type: maint: refactoring"
+    title:
+      - "/.* refactor.*/i"
+
+template: |
+  ## Changes
+
+  $CHANGES

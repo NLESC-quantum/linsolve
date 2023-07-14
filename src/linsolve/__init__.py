@@ -1,5 +1,4 @@
-from pathlib import Path
-
+"""Solve linear equations."""
 try:
     from importlib.metadata import PackageNotFoundError, version
 except ImportError:
@@ -12,6 +11,6 @@ except ModuleNotFoundError:  # pragma: no cover
         __version__ = version(__name__)
     except PackageNotFoundError:  # pragma: no cover
         # package is not installed
-        __version__ = 'unknown'
+        __version__ = "unknown"
 
-from .linsolve import *
+from .linsolve import *  # noqa

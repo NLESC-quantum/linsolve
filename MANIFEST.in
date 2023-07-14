@@ -1,3 +1,0 @@
-include *.md
-include linsolve/VERSION
-include linsolve/GIT_INFO

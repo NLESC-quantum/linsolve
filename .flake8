@@ -1,0 +1,41 @@
+[flake8]
+ignore =
+  # No space before colon
+  E203
+  W503
+  # Variable name should be lower case. We have some single-letter variables that make more sense to be caps.
+  N806
+  # Class attribute shadows a python builtin -- not much chance of that causing a problem
+  A003
+  # First line should be in imperative mood -- cached_properties don't fit this bill.
+  D401
+  # Missing docstring in public class -- my docstrings are in the __init__ which seems to fail this ?
+  D101
+  # Otherwise it flags down **kwargs in docstrings.
+  RST210
+  N815
+  # Allow method names to start and end with __
+  N807
+  # allow method names to include upper-case characters
+  N802
+  # allow variable names to be upper-case
+  N803
+  # Missing docstring in public method: TODO: this should be removed and docs added!
+  D102
+max-line-length = 88
+max-complexity = 18
+inline-quotes = double
+docstring-convention=numpy
+rst-roles =
+  class
+  method
+  func
+  attr
+  mod
+
+# Ignoring F841 allows assigning local variables without using them. This happens
+# because we "eval" strings which is not caught by flake8. This should be fixed in
+# the tests.
+per-file-ignores =
+    src/linsolve/__init__.py: F401
+    tests/test_linsolve.py: F841
