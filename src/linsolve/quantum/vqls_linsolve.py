@@ -98,11 +98,7 @@ class QuantumLinearSolver(LinearSolver):
 
         return prefac * x
 
-    def _invert_vqls(self, A, y, rcond):
-        """Use VQLS to solve the system of equation. Requires a fully constrained
-        system of equation with an hermitian AtA matrix.
-        rcond' is unused, but passed as an argument to match the interface of other
-        _invert methods."""
+    def _process_data(self, A, y):
 
         At = A.transpose([2, 1, 0]).conj()
 
@@ -113,6 +109,16 @@ class QuantumLinearSolver(LinearSolver):
             AtA = [np.dot(At[k], A[..., k]) for k in range(y.shape[-1])]
             Aty = [np.dot(At[k], y[..., k]) for k in range(y.shape[-1])]
 
+        return AtA, Aty
+
+    def _invert_vqls(self, A, y, rcond):
+        """Use VQLS to solve the system of equation. Requires a fully constrained
+        system of equation with an hermitian AtA matrix.
+        rcond' is unused, but passed as an argument to match the interface of other
+        _invert methods."""
+
+        AtA, Aty = self._process_data(A, y)
+
         output = []
 
         for m, y in zip(AtA, Aty):
@@ -122,6 +128,15 @@ class QuantumLinearSolver(LinearSolver):
             output.append(solution_vector)
 
         return np.array(output).T
+
+    def return_matrix(self):
+        """Return the matrices
+        """
+        
+        y = self.get_weighted_data()
+        A = self.get_A()
+        return self._process_data(A,y)
+
 
     def solve(self, rcond=None, mode="vqls"):
         """Compute x' = (At A)^-1 At * y, returning x' as dict of prms:values.
