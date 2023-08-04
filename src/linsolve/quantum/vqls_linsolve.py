@@ -70,10 +70,14 @@ class QuantumLinearSolver(LinearSolver):
 
         super().__init__(data, wgts, sparse, **kwargs)
         self.solver = solver
-        if "solver_options" in kwargs:
-            self.solver_options = kwargs.pop("solver_options", kwargs)
+        if solver is not None:
+            if "solver_options" in kwargs:
+                self.solver_options = kwargs.pop("solver_options", kwargs)
+            else:
+                self.solver_options = None
+            self.num_qubits = solver.ansatz.num_qubits
         else:
-            self.solver_options = None
+            self.num_qubits = kwargs["num_qubits"]
 
     @staticmethod
     def post_process_vqls_solution(A, y, x):
@@ -109,6 +113,34 @@ class QuantumLinearSolver(LinearSolver):
             AtA = [np.dot(At[k], A[..., k]) for k in range(y.shape[-1])]
             Aty = [np.dot(At[k], y[..., k]) for k in range(y.shape[-1])]
 
+        AtA, Aty = self._pad_matrices(AtA, Aty)
+                
+        return AtA, Aty
+
+    def _pad_matrices(self, AtA, Aty):
+        """_summary_
+
+        Args:
+            AtA (_type_): _description_
+            Aty (_type_): _description_
+        """
+        size_mat = len(AtA[0])
+        num_mat = len(AtA)
+        full_size = 2**self.num_qubits
+        if size_mat != full_size:
+            
+            for imat in range(num_mat):
+
+                # pad matrix with I
+                tmp = np.eye(full_size)
+                tmp[:size_mat,:size_mat] = AtA[imat]
+                AtA[imat] = tmp
+
+                # pad vects with zeros
+                tmp_vec = np.zeros(full_size)
+                tmp_vec[:size_mat] = Aty[imat]
+                Aty[imat] = tmp_vec
+
         return AtA, Aty
 
     def _invert_vqls(self, A, y, rcond):
@@ -123,7 +155,7 @@ class QuantumLinearSolver(LinearSolver):
 
         for m, y in zip(AtA, Aty):
             sol = self.solver.solve(m, y, self.solver_options)
-            solution_vector = np.real(Statevector(sol.state).data)
+            solution_vector = np.real(Statevector(sol.state).data) # [TODO] change to QST
             solution_vector = self.post_process_vqls_solution(m, y, solution_vector)
             output.append(solution_vector)
 
