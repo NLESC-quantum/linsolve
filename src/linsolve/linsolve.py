@@ -30,6 +30,7 @@ For more detail on usage, see linsolve_example.ipynb
 import ast
 from copy import deepcopy
 from functools import reduce
+import logging 
 
 import numpy as np
 import scipy.linalg
@@ -471,6 +472,7 @@ class LinearSolver:
         # np.linalg.lstsq uses lapack gelsd and is slower:
         # see https://stackoverflow.com/questions/55367024/
         #        fastest-way-of-solving-linear-least-squares
+        print('Linsolve: lsqr %dx%d system with %d rhs', A[...,0].shape[0], y.shape[1])
         x = [
             scipy.linalg.lstsq(A[..., k], y[..., k], cond=rcond, lapack_driver="gelsy")[
                 0
@@ -493,9 +495,8 @@ class LinearSolver:
         """Helper function for forming (At A)^-1 At.  Uses pinv to invert."""
         At = A.T.conj()
         AtA = np.dot(At, A)
-        print(At.shape, y.shape)
-        print(AtA.shape, np.dot(At, y).shape)
-        print(np.dot(At, y))
+
+        print('Linsolve: pinv_shared %dx%d system with %d rhs' %(AtA.shape[0], AtA.shape[1], y.shape[1]))
         AtAi = np.linalg.pinv(AtA, rcond=rcond, hermitian=True)
         # Following is slow for small matrices:
         # --> x = np.einsum('ij,jk,kn->in', AtAi, At, y, optimize=True)
@@ -521,7 +522,6 @@ class LinearSolver:
         # As of numpy 1.14, pinv works on stacks of matrices
         At = A.transpose([2, 1, 0]).conj()
         AtA = [np.dot(At[k], A[..., k]) for k in range(y.shape[-1])]
-        print(AtA.shape)
         # This is slower:
         # --> AtA = np.einsum('jin,jkn->nik', A.conj(), A, optimize=True)
 
@@ -561,7 +561,7 @@ class LinearSolver:
         """
         AtA, Aty = self._get_AtA_Aty_sparse(xs_ys_vals, y)
         AtAi = np.linalg.pinv(AtA, rcond=rcond, hermitian=True)
-        print(AtA.shape)
+        # print(AtA.shape)
         x = [np.dot(AtAi[k], Aty[k]) for k in range(y.shape[-1])]
         return np.array(x).T
 
@@ -639,7 +639,6 @@ class LinearSolver:
         sol
             a dictionary of solutions with variables as keys
         """
-        print(mode)
         assert mode in ["default", "lsqr", "pinv", "solve"]
         if rcond is None:
             rcond = np.finfo(self.dtype).resolution
@@ -647,10 +646,8 @@ class LinearSolver:
         if self.sparse:
             xs, ys, vals = self.get_A_sparse()
             if vals.shape[0] == 1 and y.shape[-1] > 1:  # reuse inverse
-                print('reuse')
                 x = self._invert_pinv_shared_sparse((xs, ys, vals), y, rcond)
             else:  # we can't reuse inverses
-                print('sparse')
                 if mode == "default":
                     _invert = self._invert_default_sparse
                 elif mode == "lsqr":
@@ -661,7 +658,6 @@ class LinearSolver:
                     _invert = self._invert_solve_sparse
                 x = _invert((xs, ys, vals), y, rcond)
         else:
-            print('dense')
             A = self.get_A()
             Ashape = self._A_shape()
             assert A.ndim == 3

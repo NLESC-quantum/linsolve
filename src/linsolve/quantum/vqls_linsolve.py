@@ -102,6 +102,32 @@ class QuantumLinearSolver(LinearSolver):
 
         return prefac * x
 
+    def _reset_solver(self):
+        """Reset the matrix circuits between stages
+        """
+        self.solver.matrix_circuits = None
+        self.solver.initial_point = None
+
+    def _check_solver_ansatz(self, size):
+        """Make sure that the ansatz has the correct size and fix it if not
+
+        Args:
+            size (np.ndarray): matrix to solve
+        """
+        num_qubits = self.solver.ansatz.num_qubits
+        min_size, max_size = 2**(num_qubits-1), 2**num_qubits
+        if min_size<size<=max_size:
+            print('keep the same ansatz with %d qubits' %num_qubits)
+            # return self.solver.ansatz
+        else:
+            num_required_qubits = int(np.ceil(np.log2(size)))
+            print('Increase to %d qubits' %num_required_qubits)
+            self.num_qubits = num_required_qubits
+            self.solver.ansatz = self.solver.ansatz.__class__(num_qubits = num_required_qubits,
+                                                                reps=self.solver.ansatz.reps,
+                                                                entanglement=self.solver.ansatz.entanglement)
+            self.solver.num_qubits = num_required_qubits
+
     def _process_data(self, A, y):
 
         At = A.transpose([2, 1, 0]).conj()
@@ -113,10 +139,12 @@ class QuantumLinearSolver(LinearSolver):
             AtA = [np.dot(At[k], A[..., k]) for k in range(y.shape[-1])]
             Aty = [np.dot(At[k], y[..., k]) for k in range(y.shape[-1])]
 
+        true_size = len(AtA[0])
+        self._check_solver_ansatz(true_size)
         AtA, Aty = self._pad_matrices(AtA, Aty)
                 
-        return AtA, Aty
-
+        return AtA, Aty, true_size
+    
     def _pad_matrices(self, AtA, Aty):
         """_summary_
 
@@ -124,9 +152,10 @@ class QuantumLinearSolver(LinearSolver):
             AtA (_type_): _description_
             Aty (_type_): _description_
         """
+        
         size_mat = len(AtA[0])
         num_mat = len(AtA)
-        full_size = 2**self.num_qubits
+        full_size = 2**self.solver.ansatz.num_qubits
         if size_mat != full_size:
             
             for imat in range(num_mat):
@@ -143,22 +172,46 @@ class QuantumLinearSolver(LinearSolver):
 
         return AtA, Aty
 
+    def _invert_vqls_shared(self, A, y, rcond):
+        """Use VQLS to solve the system of equation. Requires a fully constrained
+        system of equation with an hermitian AtA matrix.
+        rcond' is unused, but passed as an argument to match the interface of other
+        _invert methods."""
+
+        import matplotlib.pyplot as plt 
+        AtA, Aty, true_size = self._process_data(A, y)
+        self.solver.options["reuse_matrix"] = True
+        AtA = AtA[0]
+
+        output = []
+
+        for y in Aty:
+            sol = self.solver.solve(AtA, y)
+            solution_vector = self.post_process_vqls_solution(AtA, y, sol.vector)
+            output.append(solution_vector[:true_size])
+            self.solver.initial_point = sol.optimal_point
+            plt.scatter(y[:true_size], (AtA @ solution_vector)[:true_size])
+            plt.show()
+            
+        self._reset_solver()
+        return np.array(output).T
+
     def _invert_vqls(self, A, y, rcond):
         """Use VQLS to solve the system of equation. Requires a fully constrained
         system of equation with an hermitian AtA matrix.
         rcond' is unused, but passed as an argument to match the interface of other
         _invert methods."""
 
-        AtA, Aty = self._process_data(A, y)
+        AtA, Aty, true_size = self._process_data(A, y)
 
         output = []
 
         for m, y in zip(AtA, Aty):
-            sol = self.solver.solve(m, y, self.solver_options)
-            solution_vector = np.real(Statevector(sol.state).data) # [TODO] change to QST
-            solution_vector = self.post_process_vqls_solution(m, y, solution_vector)
-            output.append(solution_vector)
+            sol = self.solver.solve(m, y)
+            solution_vector = self.post_process_vqls_solution(m, y, sol.vector)
+            output.append(solution_vector[:true_size])
 
+        self._reset_solver()
         return np.array(output).T
 
     def return_matrix(self):
@@ -208,8 +261,12 @@ class QuantumLinearSolver(LinearSolver):
             raise ValueError("Quantum solver not implemented yet for sparse matrices")
         else:
             A = self.get_A()
+            Ashape = self._A_shape()
             assert A.ndim == 3
-            x = self._invert_vqls(A, y, rcond)
+            if Ashape[-1] == 1 and y.shape[-1] > 1:  # can reuse inverse
+                x = self._invert_vqls_shared(A, y, rcond)
+            else:  # we can't reuse inverses
+                x = self._invert_vqls(A, y, rcond)
 
         x.shape = x.shape[:1] + self._data_shape  # restore to shape of original data
         sol = {}
