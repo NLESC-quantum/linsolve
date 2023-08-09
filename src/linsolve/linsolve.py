@@ -36,6 +36,7 @@ import numpy as np
 import scipy.linalg
 import scipy.sparse.linalg
 from scipy.sparse import csc_matrix
+import matplotlib.pyplot as plt 
 
 # Monkey patch for backward compatibility:
 # ast.Num deprecated in Python 3.8. Make it an alias for ast.Constant
@@ -495,12 +496,23 @@ class LinearSolver:
         """Helper function for forming (At A)^-1 At.  Uses pinv to invert."""
         At = A.T.conj()
         AtA = np.dot(At, A)
-
         print('Linsolve: pinv_shared %dx%d system with %d rhs' %(AtA.shape[0], AtA.shape[1], y.shape[1]))
         AtAi = np.linalg.pinv(AtA, rcond=rcond, hermitian=True)
+        b = np.dot(At, y)
+        
         # Following is slow for small matrices:
         # --> x = np.einsum('ij,jk,kn->in', AtAi, At, y, optimize=True)
-        return np.dot(AtAi, np.dot(At, y))
+        sol = np.dot(AtAi, b)
+        # print(sol)
+        
+        # for x,y in zip(b.T, sol.T):
+        #     x /= np.linalg.norm(x)
+        #     ay = AtA@y 
+        #     ay /= np.linalg.norm(ay)
+
+        #     plt.scatter(x,ay)
+        # plt.show()
+        return sol
 
     def _invert_pinv_shared_sparse(self, xs_ys_vals, y, rcond):
         """Use pinv to invert AtA matrix.
@@ -643,6 +655,7 @@ class LinearSolver:
         if rcond is None:
             rcond = np.finfo(self.dtype).resolution
         y = self.get_weighted_data()
+
         if self.sparse:
             xs, ys, vals = self.get_A_sparse()
             if vals.shape[0] == 1 and y.shape[-1] > 1:  # reuse inverse

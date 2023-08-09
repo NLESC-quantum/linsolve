@@ -76,9 +76,11 @@ class QuantumLinearSolver(LinearSolver):
             else:
                 self.solver_options = None
             self.num_qubits = solver.ansatz.num_qubits
-        else:
+        elif "num_qubits" in kwargs:
             self.num_qubits = kwargs["num_qubits"]
-
+        else:
+            raise ValueError('Provide ansatz or num_qubits')
+        
     @staticmethod
     def post_process_vqls_solution(A, y, x):
         """Retreive the  norm and direction of the solution vector
@@ -98,9 +100,10 @@ class QuantumLinearSolver(LinearSolver):
         prefac = normy / normAx
 
         if np.dot(Ax * prefac, y) < 0:
+            print('flip')
             prefac *= -1
-
-        return prefac * x
+        sol = prefac * x 
+        return sol
 
     def _reset_solver(self):
         """Reset the matrix circuits between stages
@@ -114,14 +117,15 @@ class QuantumLinearSolver(LinearSolver):
         Args:
             size (np.ndarray): matrix to solve
         """
-        num_qubits = self.solver.ansatz.num_qubits
+        # num_qubits = self.solver.ansatz.num_qubits
+        num_qubits = self.num_qubits
         min_size, max_size = 2**(num_qubits-1), 2**num_qubits
         if min_size<size<=max_size:
             print('keep the same ansatz with %d qubits' %num_qubits)
             # return self.solver.ansatz
         else:
             num_required_qubits = int(np.ceil(np.log2(size)))
-            print('Increase to %d qubits' %num_required_qubits)
+            print('change to %d qubits' %num_required_qubits)
             self.num_qubits = num_required_qubits
             self.solver.ansatz = self.solver.ansatz.__class__(num_qubits = num_required_qubits,
                                                                 reps=self.solver.ansatz.reps,
@@ -138,7 +142,7 @@ class QuantumLinearSolver(LinearSolver):
         else:
             AtA = [np.dot(At[k], A[..., k]) for k in range(y.shape[-1])]
             Aty = [np.dot(At[k], y[..., k]) for k in range(y.shape[-1])]
-
+        print(len(AtA[0]), AtA[0].shape)
         true_size = len(AtA[0])
         self._check_solver_ansatz(true_size)
         AtA, Aty = self._pad_matrices(AtA, Aty)
@@ -155,7 +159,8 @@ class QuantumLinearSolver(LinearSolver):
         
         size_mat = len(AtA[0])
         num_mat = len(AtA)
-        full_size = 2**self.solver.ansatz.num_qubits
+        # full_size = 2**self.solver.ansatz.num_qubits
+        full_size = 2**self.num_qubits
         if size_mat != full_size:
             
             for imat in range(num_mat):
@@ -180,21 +185,32 @@ class QuantumLinearSolver(LinearSolver):
 
         import matplotlib.pyplot as plt 
         AtA, Aty, true_size = self._process_data(A, y)
-        self.solver.options["reuse_matrix"] = True
+        
+        self.solver.options["reuse_matrix"] = False
         AtA = AtA[0]
-
         output = []
 
         for y in Aty:
-            sol = self.solver.solve(AtA, y)
-            solution_vector = self.post_process_vqls_solution(AtA, y, sol.vector)
+            if np.linalg.norm(y) == 0:
+                solution_vector = np.zeros(true_size)
+            else:
+                sol = self.solver.solve(AtA, y)
+                solution_vector = self.post_process_vqls_solution(AtA, y, sol.vector)
+                print(AtA@solution_vector - y)
+                self.solver.initial_point = sol.optimal_point
             output.append(solution_vector[:true_size])
-            self.solver.initial_point = sol.optimal_point
-            plt.scatter(y[:true_size], (AtA @ solution_vector)[:true_size])
-            plt.show()
-            
+        output = np.array(output).T
+        print(output)
+        
+        for x,y in zip(Aty, output.T):
+            x /= np.linalg.norm(x)
+            ay = AtA@y 
+            ay /= np.linalg.norm(ay)
+            plt.scatter(x,ay)
+        plt.show()
+        
         self._reset_solver()
-        return np.array(output).T
+        return output
 
     def _invert_vqls(self, A, y, rcond):
         """Use VQLS to solve the system of equation. Requires a fully constrained
@@ -220,7 +236,7 @@ class QuantumLinearSolver(LinearSolver):
         
         y = self.get_weighted_data()
         A = self.get_A()
-        return self._process_data(A,y)
+        return self._process_data(A, y)
 
 
     def solve(self, rcond=None, mode="vqls"):
@@ -323,6 +339,13 @@ class QuantumLogProductSolver(LogProductSolver):
                 **kwargs,
             )
 
+    def return_matrix(self):
+        """return the data of the linear systems
+        """
+        if self.ls_phs is not None:
+            return self.ls_amp.return_matrix(), self.ls_phs.return_matrix() 
+        
+        return self.ls_amp.return_matrix()
 
 # XXX make a version of linproductsolver that taylor expands in e^{a+bi} form
 # see https://github.com/HERA-Team/linsolve/issues/15
