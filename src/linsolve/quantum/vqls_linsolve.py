@@ -214,8 +214,11 @@ class QuantumLinearSolver(LinearSolver):
 
         # init the outputs
         output, solver_result = [], SolverResult()
+        print('VQLS Linsolve: vqls_shared %dx%d system with %d rhs' %(AtA.shape[0], AtA.shape[1], y.shape[1]))
+        idx_rhs, num_rhs = 1, y.shape[1]
 
         for y in Aty:
+            print('\t rhs %d / %d' %(idx_rhs, num_rhs))
             if np.linalg.norm(y) == 0:
                 solution_vector = np.zeros(true_size)
             else:
@@ -239,6 +242,7 @@ class QuantumLinearSolver(LinearSolver):
 
             # reset the logger
             self._reset_logger()
+            idx_rhs += 1
 
         output = np.array(output).T
         self._reset_solver()

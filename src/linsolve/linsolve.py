@@ -503,15 +503,6 @@ class LinearSolver:
         # Following is slow for small matrices:
         # --> x = np.einsum('ij,jk,kn->in', AtAi, At, y, optimize=True)
         sol = np.dot(AtAi, b)
-        # print(sol)
-        
-        # for x,y in zip(b.T, sol.T):
-        #     x /= np.linalg.norm(x)
-        #     ay = AtA@y 
-        #     ay /= np.linalg.norm(ay)
-
-        #     plt.scatter(x,ay)
-        # plt.show()
         return sol
 
     def _invert_pinv_shared_sparse(self, xs_ys_vals, y, rcond):
