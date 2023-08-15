@@ -28,7 +28,7 @@ For more detail on usage, see linsolve_example.ipynb
 """
 
 import ast
-
+from dataclasses import dataclass 
 
 import numpy as np
 from qiskit.quantum_info import Statevector
@@ -44,6 +44,27 @@ from ..linsolve import get_name
 # if it gets removed.
 if not hasattr(ast, "Num"):
     ast.Num = ast.Constant
+
+
+class SolverResult:
+
+    def __init__(self):
+        self.cost_function = []
+        self.optimal_parameters = [] 
+        self.solution_vector = []
+        self.true_rhs = []
+        self.sol_rhs = []
+
+    def update(self, cost, params, vec, rhs, rhs_approx):
+        self.cost_function.append(cost)
+        self.optimal_parameters.append(params)
+        self.solution_vector.append(vec)
+        self.true_rhs.append(rhs)
+        self.sol_rhs.append(rhs_approx)
+
+    def todict(self):
+        return self.__dict__
+        
 
 
 class QuantumLinearSolver(LinearSolver):
@@ -110,6 +131,10 @@ class QuantumLinearSolver(LinearSolver):
         """
         self.solver.matrix_circuits = None
         self.solver.initial_point = None
+
+    def _reset_logger(self):
+        self.solver.logger.values = []
+        self.solver.logger.parameters = []
 
     def _check_solver_ansatz(self, size):
         """Make sure that the ansatz has the correct size and fix it if not
@@ -183,34 +208,41 @@ class QuantumLinearSolver(LinearSolver):
         rcond' is unused, but passed as an argument to match the interface of other
         _invert methods."""
 
-        import matplotlib.pyplot as plt 
+        # pre process the matrix and vectors
         AtA, Aty, true_size = self._process_data(A, y)
-        
-        self.solver.options["reuse_matrix"] = False
         AtA = AtA[0]
-        output = []
+
+        # init the outputs
+        output, solver_result = [], SolverResult()
 
         for y in Aty:
             if np.linalg.norm(y) == 0:
                 solution_vector = np.zeros(true_size)
             else:
+                # solve the system
                 sol = self.solver.solve(AtA, y)
+                # postprocess the solution vector
                 solution_vector = self.post_process_vqls_solution(AtA, y, sol.vector)
-                print(AtA@solution_vector - y)
+
+                # store results
+                solver_result.update( 
+                    self.solver.logger.values,
+                    sol.optimal_point,
+                    solution_vector,
+                    y,AtA@solution_vector
+                )
+                # init from the last optimal point ...
                 self.solver.initial_point = sol.optimal_point
+
+            # store solution vector 
             output.append(solution_vector[:true_size])
+
+            # reset the logger
+            self._reset_logger()
+
         output = np.array(output).T
-        print(output)
-        
-        for x,y in zip(Aty, output.T):
-            x /= np.linalg.norm(x)
-            ay = AtA@y 
-            ay /= np.linalg.norm(ay)
-            plt.scatter(x,ay)
-        plt.show()
-        
         self._reset_solver()
-        return output
+        return output, solver_result
 
     def _invert_vqls(self, A, y, rcond):
         """Use VQLS to solve the system of equation. Requires a fully constrained
@@ -280,15 +312,15 @@ class QuantumLinearSolver(LinearSolver):
             Ashape = self._A_shape()
             assert A.ndim == 3
             if Ashape[-1] == 1 and y.shape[-1] > 1:  # can reuse inverse
-                x = self._invert_vqls_shared(A, y, rcond)
+                x, res = self._invert_vqls_shared(A, y, rcond)
             else:  # we can't reuse inverses
-                x = self._invert_vqls(A, y, rcond)
+                x, res = self._invert_vqls(A, y, rcond)
 
         x.shape = x.shape[:1] + self._data_shape  # restore to shape of original data
         sol = {}
         for p in list(self.prms.values()):
             sol.update(p.get_sol(x, self.prm_order))
-        return sol
+        return sol, res
 
 
 class QuantumLogProductSolver(LogProductSolver):
