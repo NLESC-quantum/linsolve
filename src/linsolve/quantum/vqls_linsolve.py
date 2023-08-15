@@ -62,6 +62,17 @@ class SolverResult:
         self.true_rhs.append(rhs)
         self.sol_rhs.append(rhs_approx)
 
+    def clean_up(self):
+        max_size = 0
+        for cfun in self.cost_function:
+            max_size = max(len(cfun), max_size)
+
+        cleaned_cost_function = []
+        for cfun in self.cost_function:
+            cleaned_cost_function.append(cfun + (max_size-len(cfun)) * [0.])
+
+        self.cost_function = cleaned_cost_function 
+            
     def todict(self):
         return self.__dict__
         
@@ -224,6 +235,7 @@ class QuantumLinearSolver(LinearSolver):
             else:
                 # solve the system
                 sol = self.solver.solve(AtA, y)
+                
                 # postprocess the solution vector
                 solution_vector = self.post_process_vqls_solution(AtA, y, sol.vector)
 
@@ -246,6 +258,7 @@ class QuantumLinearSolver(LinearSolver):
 
         output = np.array(output).T
         self._reset_solver()
+        solver_result.clean_up()
         return output, solver_result
 
     def _invert_vqls(self, A, y, rcond):
