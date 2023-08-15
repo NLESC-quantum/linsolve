@@ -121,7 +121,6 @@ class QuantumLinearSolver(LinearSolver):
         prefac = normy / normAx
 
         if np.dot(Ax * prefac, y) < 0:
-            print('flip')
             prefac *= -1
         sol = prefac * x 
         return sol
@@ -146,11 +145,12 @@ class QuantumLinearSolver(LinearSolver):
         num_qubits = self.num_qubits
         min_size, max_size = 2**(num_qubits-1), 2**num_qubits
         if min_size<size<=max_size:
-            print('keep the same ansatz with %d qubits' %num_qubits)
+            pass 
+            # print('keep the same ansatz with %d qubits' %num_qubits)
             # return self.solver.ansatz
         else:
             num_required_qubits = int(np.ceil(np.log2(size)))
-            print('change to %d qubits' %num_required_qubits)
+            print('Warning: Changed ansatz size to %d qubits' %num_required_qubits)
             self.num_qubits = num_required_qubits
             self.solver.ansatz = self.solver.ansatz.__class__(num_qubits = num_required_qubits,
                                                                 reps=self.solver.ansatz.reps,
@@ -167,7 +167,7 @@ class QuantumLinearSolver(LinearSolver):
         else:
             AtA = [np.dot(At[k], A[..., k]) for k in range(y.shape[-1])]
             Aty = [np.dot(At[k], y[..., k]) for k in range(y.shape[-1])]
-        print(len(AtA[0]), AtA[0].shape)
+        
         true_size = len(AtA[0])
         self._check_solver_ansatz(true_size)
         AtA, Aty = self._pad_matrices(AtA, Aty)
