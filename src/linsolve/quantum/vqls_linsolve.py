@@ -28,14 +28,13 @@ For more detail on usage, see linsolve_example.ipynb
 """
 
 import ast
-from dataclasses import dataclass 
 
+from time import time 
 import numpy as np
-from qiskit.quantum_info import Statevector
 import numpy as np
 
 
-from qiskit.quantum_info import Statevector
+
 from ..linsolve import LinearSolver, LogProductSolver, LinProductSolver
 from ..linsolve import get_name
 
@@ -222,14 +221,16 @@ class QuantumLinearSolver(LinearSolver):
         # pre process the matrix and vectors
         AtA, Aty, true_size = self._process_data(A, y)
         AtA = AtA[0]
+        system_size, num_rhs = AtA.shape, y.shape[1]
 
         # init the outputs
         output, solver_result = [], SolverResult()
-        print('VQLS Linsolve: vqls_shared %dx%d system with %d rhs' %(AtA.shape[0], AtA.shape[1], y.shape[1]))
-        idx_rhs, num_rhs = 1, y.shape[1]
+        print('VQLS Linsolve: vqls_shared %dx%d system with %d rhs' %(system_size[0], system_size[1], num_rhs))
+        idx_rhs = 1
 
         for y in Aty:
-            print('\t rhs %d / %d' %(idx_rhs, num_rhs))
+            tinit = time()
+            
             if np.linalg.norm(y) == 0:
                 solution_vector = np.zeros(true_size)
             else:
@@ -248,6 +249,14 @@ class QuantumLinearSolver(LinearSolver):
                 )
                 # init from the last optimal point ...
                 self.solver.initial_point = sol.optimal_point
+            elapsed_time = (time() - tinit) / 60.
+            
+            if idx_rhs == 1:
+                print(f'\t First iteration done in {elapsed_time} min.', flush=True)
+                print(f'\t Estimated runtime {elapsed_time * num_rhs / 60.} hours.', flush=True)
+            else:
+                print(f'\t {idx_rhs} iteration done in {elapsed_time} min.', flush=False)
+
 
             # store solution vector 
             output.append(solution_vector[:true_size])
