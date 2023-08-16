@@ -179,7 +179,8 @@ class QuantumLinearSolver(LinearSolver):
             Aty = [np.dot(At[k], y[..., k]) for k in range(y.shape[-1])]
         
         true_size = len(AtA[0])
-        self._check_solver_ansatz(true_size)
+        if self.solver is not None:
+            self._check_solver_ansatz(true_size)
         AtA, Aty = self._pad_matrices(AtA, Aty)
                 
         return AtA, Aty, true_size
@@ -377,6 +378,15 @@ class QuantumLogProductSolver(LogProductSolver):
         for k in constants:
             c = np.log(constants[k])  # log unwraps complex circle at -pi
             logamp_consts[k], logphs_consts[k] = c.real, c.imag
+
+        self.solver = solver
+        if solver is not None:
+            self.num_qubits = solver.ansatz.num_qubits
+        elif "num_qubits" in kwargs:
+            self.num_qubits = kwargs["num_qubits"]
+        else:
+            raise ValueError('Provide ansatz or num_qubits')
+
 
         self.ls_amp = QuantumLinearSolver(
             solver,

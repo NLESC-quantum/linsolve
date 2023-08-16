@@ -29,7 +29,7 @@ For more detail on usage, see linsolve_example.ipynb
 
 import ast
 import numpy as np
-
+from time import time 
 
 from qiskit.quantum_info import Statevector
 from ..linsolve import LinearSolver, LogProductSolver, LinProductSolver
@@ -41,6 +41,33 @@ from ..linsolve import get_name
 if not hasattr(ast, "Num"):
     ast.Num = ast.Constant
 
+
+class SolverResult:
+
+    def __init__(self):
+        self.solution_vector = []
+        self.true_rhs = []
+        self.sol_rhs = []
+
+    def update(self, vec, rhs, rhs_approx):
+        self.solution_vector.append(vec)
+        self.true_rhs.append(rhs)
+        self.sol_rhs.append(rhs_approx)
+
+    def clean_up(self):
+        max_size = 0
+        for cfun in self.cost_function:
+            max_size = max(len(cfun), max_size)
+
+        cleaned_cost_function = []
+        for cfun in self.cost_function:
+            cleaned_cost_function.append(cfun + (max_size-len(cfun)) * [0.])
+
+        self.cost_function = cleaned_cost_function 
+            
+    def todict(self):
+        return self.__dict__
+        
 
 class QUBOLinearSolver(LinearSolver):
     def __init__(self, solver, data, wgts={}, sparse=False, **kwargs):
@@ -66,10 +93,6 @@ class QUBOLinearSolver(LinearSolver):
 
         super().__init__(data, wgts, sparse, **kwargs)
         self.solver = solver
-        if "solver_options" in kwargs:
-            self.solver_options = kwargs.pop("solver_options", kwargs)
-        else:
-            self.solver_options = None
 
     @staticmethod
     def _normalization(mat, vec):
@@ -111,6 +134,41 @@ class QUBOLinearSolver(LinearSolver):
             _type_: _description_
         """
 
+        AtA, Aty = self._process_data(A, y)
+        system_size, num_rhs = AtA[0].shape, y.shape[1]
+
+        # init the outputs
+        output, solver_result = [], SolverResult()
+        print('QUBO Linsolve: vqls_shared %dx%d system with %d rhs' %(system_size[0], system_size[1], num_rhs))
+        idx_rhs = 1
+
+        for m, y in zip(AtA, Aty):
+            tinit = time()
+            if np.linalg.norm(y) == 0:
+                solution_vector = np.zeros(true_size)
+            else:
+                (m_, y_), (m_norm, y_norm) = self._normalization(m, y)
+                solution_vector = self.solver.solve(m_, y_)
+                solution_vector = self._unnormalization(solution_vector, m_norm, y_norm)
+
+                # store results
+                solver_result.update( solution_vector, y, m@solution_vector)
+            elapsed_time = (time() - tinit) / 60.
+            
+            if idx_rhs == 1:
+                print(f'\t First iteration done in {elapsed_time} min.', flush=True)
+                print(f'\t Estimated runtime {elapsed_time * num_rhs / 60.} hours.', flush=True)
+            else:
+                print(f'\t {idx_rhs} iteration done in {elapsed_time} min.', flush=False)
+
+
+            # store solution vector 
+            output.append(solution_vector)
+            idx_rhs += 1
+        return np.array(output).T, solver_result
+    
+    def _process_data(self, A, y):
+
         At = A.transpose([2, 1, 0]).conj()
 
         if At.shape[0] == 1:
@@ -119,22 +177,16 @@ class QUBOLinearSolver(LinearSolver):
         else:
             AtA = [np.dot(At[k], A[..., k]) for k in range(y.shape[-1])]
             Aty = [np.dot(At[k], y[..., k]) for k in range(y.shape[-1])]
-
-        output = []
-
-        for m, y in zip(AtA, Aty):
-            (m_, y_), (m_norm, y_norm) = self._normalization(m, y)
-            self.solver(
-                m_, y_
-            )  # <= will break for now. We need to pass an empty solver and set the matrices here
-            solution_vector = self.solver.solve(
-                nqbit=self.solver_options["num_qbits"],
-                num_reads=self.solver_options["num_reads"],
-            )
-            solution_vector = self._unnormalization(solution_vector, m_norm, y_norm)
-            output.append(solution_vector)
-
-        return np.array(output).T
+        
+        return AtA, Aty
+    
+    def return_matrix(self):
+        """Return the matrices
+        """
+        
+        y = self.get_weighted_data()
+        A = self.get_A()
+        return self._process_data(A, y)
 
     def solve(self, rcond=None, mode="qubo"):
         """Compute x' = (At A)^-1 At * y, returning x' as dict of prms:values.
@@ -148,14 +200,6 @@ class QUBOLinearSolver(LinearSolver):
         mode : {'default', 'lsqr', 'pinv', or 'solve'},
             selects which inverter to use, unless all equations share the same A matrix,
             in which case pinv is always used:
-
-            * 'default': alias for 'pinv'.
-            * 'lsqr': uses numpy.linalg.lstsq to do an inversion-less solve.  Usually
-              the fastest solver.
-            * 'solve': uses numpy.linalg.solve to do an inversion-less solve.  Fastest,
-              but only works for fully constrained systems of equations.
-            * 'pinv': uses numpy.linalg.pinv to perform a pseudo-inverse and then
-              solves. Can sometimes be more numerically stable (but slower) than 'lsqr'.
 
             All of these modes are superceded if the same system of equations applies
             to all datapoints in an array.  In this case, a inverse-based method is
@@ -175,13 +219,13 @@ class QUBOLinearSolver(LinearSolver):
         else:
             A = self.get_A()
             assert A.ndim == 3
-            x = self._invert_qubo(A, y, rcond)
+            x, res = self._invert_qubo(A, y, rcond)
 
         x.shape = x.shape[:1] + self._data_shape  # restore to shape of original data
         sol = {}
         for p in list(self.prms.values()):
             sol.update(p.get_sol(x, self.prm_order))
-        return sol
+        return sol, res
 
 
 class QUBOLogProductSolver(LogProductSolver):
