@@ -30,11 +30,13 @@ For more detail on usage, see linsolve_example.ipynb
 import ast
 from copy import deepcopy
 from functools import reduce
+import logging 
 
 import numpy as np
 import scipy.linalg
 import scipy.sparse.linalg
 from scipy.sparse import csc_matrix
+
 
 # Monkey patch for backward compatibility:
 # ast.Num deprecated in Python 3.8. Make it an alias for ast.Constant
@@ -471,6 +473,7 @@ class LinearSolver:
         # np.linalg.lstsq uses lapack gelsd and is slower:
         # see https://stackoverflow.com/questions/55367024/
         #        fastest-way-of-solving-linear-least-squares
+        print('Linsolve: lsqr %dx%d system with %d rhs', A[...,0].shape[0], y.shape[1])
         x = [
             scipy.linalg.lstsq(A[..., k], y[..., k], cond=rcond, lapack_driver="gelsy")[
                 0
@@ -493,10 +496,14 @@ class LinearSolver:
         """Helper function for forming (At A)^-1 At.  Uses pinv to invert."""
         At = A.T.conj()
         AtA = np.dot(At, A)
+        print('Linsolve: pinv_shared %dx%d system with %d rhs' %(AtA.shape[0], AtA.shape[1], y.shape[1]))
         AtAi = np.linalg.pinv(AtA, rcond=rcond, hermitian=True)
+        b = np.dot(At, y)
+        
         # Following is slow for small matrices:
         # --> x = np.einsum('ij,jk,kn->in', AtAi, At, y, optimize=True)
-        return np.dot(AtAi, np.dot(At, y))
+        sol = np.dot(AtAi, b)
+        return sol
 
     def _invert_pinv_shared_sparse(self, xs_ys_vals, y, rcond):
         """Use pinv to invert AtA matrix.
@@ -518,7 +525,6 @@ class LinearSolver:
         # As of numpy 1.14, pinv works on stacks of matrices
         At = A.transpose([2, 1, 0]).conj()
         AtA = [np.dot(At[k], A[..., k]) for k in range(y.shape[-1])]
-
         # This is slower:
         # --> AtA = np.einsum('jin,jkn->nik', A.conj(), A, optimize=True)
 
@@ -558,6 +564,7 @@ class LinearSolver:
         """
         AtA, Aty = self._get_AtA_Aty_sparse(xs_ys_vals, y)
         AtAi = np.linalg.pinv(AtA, rcond=rcond, hermitian=True)
+        # print(AtA.shape)
         x = [np.dot(AtAi[k], Aty[k]) for k in range(y.shape[-1])]
         return np.array(x).T
 
@@ -639,6 +646,7 @@ class LinearSolver:
         if rcond is None:
             rcond = np.finfo(self.dtype).resolution
         y = self.get_weighted_data()
+
         if self.sparse:
             xs, ys, vals = self.get_A_sparse()
             if vals.shape[0] == 1 and y.shape[-1] > 1:  # reuse inverse
