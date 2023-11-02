@@ -145,7 +145,7 @@ class QUBOLinearSolver(LinearSolver):
         for m, y in zip(AtA, Aty):
             tinit = time()
             if np.linalg.norm(y) == 0:
-                solution_vector = np.zeros(true_size)
+                solution_vector = np.zeros(system_size[0])
             else:
                 (m_, y_), (m_norm, y_norm) = self._normalization(m, y)
                 solution_vector = self.solver.solve(m_, y_)
