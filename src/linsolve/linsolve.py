@@ -36,7 +36,7 @@ import numpy as np
 import scipy.linalg
 import scipy.sparse.linalg
 from scipy.sparse import csc_matrix
-import matplotlib.pyplot as plt 
+
 
 # Monkey patch for backward compatibility:
 # ast.Num deprecated in Python 3.8. Make it an alias for ast.Constant
