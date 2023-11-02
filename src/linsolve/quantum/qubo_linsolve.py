@@ -31,7 +31,6 @@ import ast
 import numpy as np
 from time import time 
 
-from qiskit.quantum_info import Statevector
 from ..linsolve import LinearSolver, LogProductSolver, LinProductSolver
 from ..linsolve import get_name
 
